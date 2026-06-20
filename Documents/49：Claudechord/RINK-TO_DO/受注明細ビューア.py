@@ -496,7 +496,7 @@ function escHtml(s) {{
 
 function parseCSV(text) {{
   const rows = [];
-  const lines = text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n');
+  const lines = text.replace(/\\r\\n/g,'\\n').replace(/\\r/g,'\\n').split('\\n');
   for (const line of lines) {{
     if (!line.trim()) continue;
     const row = [];
@@ -583,7 +583,7 @@ function renderCSVData(dataRows) {{
     return ac.localeCompare(bc,'ja') || ad.localeCompare(bd,'ja');
   }});
 
-  document.getElementById('tableBody').innerHTML = dataRows.map(buildTr).join('\n');
+  document.getElementById('tableBody').innerHTML = dataRows.map(buildTr).join('');
 
   // 工程１ドロップダウン更新
   const vals = [...new Set(dataRows.map(r=>(r[14]||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ja'));
