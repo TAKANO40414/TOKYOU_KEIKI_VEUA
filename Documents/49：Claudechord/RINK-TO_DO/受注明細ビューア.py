@@ -216,7 +216,6 @@ header h1 {{
   color: #fff;
   font-weight: bold;
 }}
-#csvFileInput {{ display: none; }}
 label.filter-label {{
   display: flex;
   align-items: center;
@@ -340,8 +339,10 @@ td {{
   <span style="font-size:11px;color:#9bc">{esc(filename)}</span>
 </header>
 <div class="controls">
-  <button class="btn btn-load" onclick="document.getElementById('csvFileInput').click()">📂 CSVを読み込む</button>
-  <input type="file" id="csvFileInput" accept=".csv" onchange="onCsvSelected(event)">
+  <label class="btn btn-load" style="cursor:pointer;">
+    📂 CSVを読み込む
+    <input type="file" id="csvFileInput" accept=".csv" onchange="onCsvSelected(event)" style="display:none;">
+  </label>
   <span style="width:1px;height:24px;background:#ddd;display:inline-block;"></span>
   <button class="btn btn-hide" onclick="hideDone()">完了済みを非表示</button>
   <button class="btn btn-show" onclick="showDone()">完了済みを表示</button>
