@@ -80,9 +80,13 @@ def build_rows_html(rows):
     parts = []
     for row in sorted_rows:
         kanryo = get(row, KANRYO_COL)
-        # 工程の完了日に「未」が一つでもあれば完了扱いにしない
-        has_mi = any('未' in get(row, 16 + i * 4) for i in range(10))
-        is_done = bool(kanryo) and not has_mi
+        # アクティブな工程（工程名あり）の完了日リスト
+        active_dates = [get(row, 16 + i * 4) for i in range(10) if get(row, 14 + i * 4)]
+        # 「未」が一つでもあれば完了にしない
+        has_mi = any('未' in d for d in active_dates)
+        # 最終納品日あり、またはすべての工程が「完」なら完了
+        all_kan = bool(active_dates) and all('完' in d for d in active_dates)
+        is_done = (bool(kanryo) or all_kan) and not has_mi
 
         raw_no = get(row, 0)
         # 0000123456-000 → 123456-000（ハイフン前の先頭ゼロを除去）
@@ -558,9 +562,13 @@ function fmtJuchuNo(s) {{
 }}
 
 function buildTr(row) {{
-  const kanryo  = (row[54]||'').trim();
-  const hasMi   = Array.from({{length:10}}, (_,i) => (row[16+i*4]||'').trim()).some(d => d.includes('未'));
-  const isDone  = !!kanryo && !hasMi;
+  const kanryo      = (row[54]||'').trim();
+  const activeDates = Array.from({{length:10}}, (_,i) => (row[14+i*4]||'').trim())
+                        .map((name,i) => name ? (row[16+i*4]||'').trim() : null)
+                        .filter(d => d !== null);
+  const hasMi   = activeDates.some(d => d.includes('未'));
+  const allKan  = activeDates.length > 0 && activeDates.every(d => d.includes('完'));
+  const isDone  = (!!kanryo || allKan) && !hasMi;
   const proc1   = escHtml((row[14]||'').trim());
   const product2 = (row[5]||'').trim();
   const p2 = product2 ? `<br><small class="product2">${{escHtml(product2)}}</small>` : '';
