@@ -212,6 +212,12 @@ header h1 {{
   background: #6a4c93;
   color: #fff;
 }}
+.btn-load {{
+  background: #e67e22;
+  color: #fff;
+  font-weight: bold;
+}}
+#csvFileInput {{ display: none; }}
 label.filter-label {{
   display: flex;
   align-items: center;
@@ -335,6 +341,9 @@ td {{
   <span style="font-size:11px;color:#9bc">{esc(filename)}</span>
 </header>
 <div class="controls">
+  <button class="btn btn-load" onclick="document.getElementById('csvFileInput').click()">📂 CSVを読み込む</button>
+  <input type="file" id="csvFileInput" accept=".csv" onchange="onCsvSelected(event)">
+  <span style="width:1px;height:24px;background:#ddd;display:inline-block;"></span>
   <button class="btn btn-hide" onclick="hideDone()">完了済みを非表示</button>
   <button class="btn btn-show" onclick="showDone()">完了済みを表示</button>
   <button class="btn btn-all" onclick="showAll()">すべて表示</button>
@@ -479,6 +488,140 @@ function sortByDefault() {{
   }});
   rows.forEach(r => tbody.appendChild(r));
   applyFilters();
+}}
+
+// ── CSV読み込み（ブラウザ内） ───────────────────────────────────
+function escHtml(s) {{
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}}
+
+function parseCSV(text) {{
+  const rows = [];
+  const lines = text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n');
+  for (const line of lines) {{
+    if (!line.trim()) continue;
+    const row = [];
+    let field = '', inQ = false;
+    for (let i = 0; i < line.length; i++) {{
+      const c = line[i];
+      if (c === '"') {{
+        if (inQ && line[i+1] === '"') {{ field += '"'; i++; }}
+        else inQ = !inQ;
+      }} else if (c === ',' && !inQ) {{
+        row.push(field); field = '';
+      }} else {{
+        field += c;
+      }}
+    }}
+    row.push(field);
+    rows.push(row);
+  }}
+  return rows;
+}}
+
+function csvProcClass(date) {{
+  if (!date) return 'proc-mi';
+  if (date.includes('完') || date.includes('確')) return 'proc-done';
+  if (date.includes('進')) return 'proc-shin';
+  return 'proc-mi';
+}}
+
+function buildProcessBadges(row) {{
+  const parts = [];
+  for (let i = 0; i < 10; i++) {{
+    const name = (row[14+i*4]||'').trim();
+    if (!name) continue;
+    const date    = (row[16+i*4]||'').trim();
+    const machine = (row[15+i*4]||'').trim();
+    const cls     = csvProcClass(date);
+    const tip     = machine ? ` title="${{escHtml(machine)}}"` : '';
+    const ds      = date ? `<span class="proc-date">${{escHtml(date)}}</span>` : '';
+    parts.push(`<span class="proc ${{cls}}"${{tip}}>${{escHtml(name)}}${{ds}}</span>`);
+  }}
+  return parts.length ? parts.join('') : '<span class="no-proc">-</span>';
+}}
+
+function fmtAmount(s) {{
+  const v = parseInt((s||'').trim());
+  return isNaN(v) ? (s||'') : v.toLocaleString('ja-JP');
+}}
+
+function fmtJuchuNo(s) {{
+  s = (s||'').trim();
+  if (s.includes('-')) {{
+    const [pre, suf] = s.split('-');
+    const n = parseInt(pre);
+    return isNaN(n) ? s : n + '-' + suf;
+  }}
+  return s;
+}}
+
+function buildTr(row) {{
+  const kanryo  = (row[54]||'').trim();
+  const isDone  = !!kanryo;
+  const proc1   = escHtml((row[14]||'').trim());
+  const product2 = (row[5]||'').trim();
+  const p2 = product2 ? `<br><small class="product2">${{escHtml(product2)}}</small>` : '';
+  return `<tr class="${{isDone?'done':''}}" data-done="${{isDone?1:0}}" data-proc1="${{proc1}}">
+  <td class="td-no">${{escHtml(fmtJuchuNo(row[0]))}}</td>
+  <td class="td-date">${{escHtml((row[1]||'').trim())}}</td>
+  <td class="td-customer">${{escHtml((row[2]||'').trim())}}</td>
+  <td class="td-product">${{escHtml((row[4]||'').trim())}}${{p2}}</td>
+  <td class="td-qty">${{escHtml((row[6]||'').trim())}}<span class="unit">${{escHtml((row[7]||'').trim())}}</span></td>
+  <td class="td-amount">¥${{fmtAmount(row[9])}}</td>
+  <td class="td-delivery">${{escHtml((row[10]||'').trim())}}</td>
+  <td class="td-reply">${{escHtml((row[11]||'').trim())}}</td>
+  <td class="td-version">${{escHtml((row[12]||'').trim())}}</td>
+  <td class="td-process">${{buildProcessBadges(row)}}</td>
+  <td class="td-kanryo">${{escHtml(kanryo)}}</td>
+</tr>`;
+}}
+
+function renderCSVData(dataRows) {{
+  // 得意先→納期順でソート
+  dataRows.sort((a,b) => {{
+    const ac=(a[2]||'').trim(), bc=(b[2]||'').trim();
+    const ad=(a[10]||'').trim(), bd=(b[10]||'').trim();
+    return ac.localeCompare(bc,'ja') || ad.localeCompare(bd,'ja');
+  }});
+
+  document.getElementById('tableBody').innerHTML = dataRows.map(buildTr).join('\n');
+
+  // 工程１ドロップダウン更新
+  const vals = [...new Set(dataRows.map(r=>(r[14]||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ja'));
+  const sel = document.getElementById('proc1Select');
+  sel.innerHTML = '<option value="">すべて</option>' + vals.map(v=>`<option value="${{escHtml(v)}}">${{escHtml(v)}}</option>`).join('');
+
+  // ヘッダー統計更新
+  const total = dataRows.length;
+  const done  = dataRows.filter(r=>(r[54]||'').trim()).length;
+  document.querySelector('.stats').textContent = `全 ${{total}} 件 ／ 完了 ${{done}} 件 ／ 進行中 ${{total-done}} 件`;
+
+  // フィルター・ソートをリセット
+  hidingDone = false; searchText = ''; sortCol = -1;
+  document.getElementById('searchBox').value = '';
+  document.querySelectorAll('thead th').forEach(th=>th.classList.remove('sort-asc','sort-desc'));
+  applyFilters();
+}}
+
+function onCsvSelected(event) {{
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {{
+    const buf = e.target.result;
+    // UTF-8で試し、文字化けがあればShift-JISで再試行
+    let text = new TextDecoder('utf-8').decode(buf);
+    if (text.includes('�')) text = new TextDecoder('shift-jis').decode(buf);
+    const rows = parseCSV(text);
+    if (rows.length < 2) {{ alert('データが読み込めませんでした。'); return; }}
+    const header = rows[0];
+    const data   = rows.slice(1).filter(r => r.some(c=>c.trim()));
+    document.querySelector('header span:last-child').textContent = file.name;
+    renderCSVData(data);
+  }};
+  reader.readAsArrayBuffer(file);
+  event.target.value = ''; // 同じファイルを再選択できるようリセット
 }}
 </script>
 </body>
