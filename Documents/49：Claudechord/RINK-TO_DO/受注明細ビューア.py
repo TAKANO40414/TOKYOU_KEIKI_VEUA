@@ -8,6 +8,8 @@ import sys
 import webbrowser
 import html as html_mod
 import tempfile
+import tkinter as tk
+from tkinter import filedialog, messagebox
 
 CSV_PATH = "/Users/takanoakihito/Desktop/受注明細一覧_20260620.csv"
 
@@ -484,10 +486,36 @@ function sortByDefault() {{
 
 SAMPLE_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "サンプルデータ.csv")
 
+def pick_csv():
+    """ファイル選択ダイアログでCSVを選ぶ。キャンセル時はNoneを返す。"""
+    root = tk.Tk()
+    root.withdraw()          # メインウィンドウを非表示
+    root.attributes('-topmost', True)
+    path = filedialog.askopenfilename(
+        title="受注明細CSVを選択してください",
+        filetypes=[("CSVファイル", "*.csv"), ("すべてのファイル", "*.*")],
+        initialdir=os.path.expanduser("~/Desktop"),
+    )
+    root.destroy()
+    return path if path else None
+
 def main():
-    csv_path = CSV_PATH
+    # コマンドライン引数があればそれを使用
     if len(sys.argv) > 1:
         csv_path = sys.argv[1]
+    else:
+        # ファイル選択ダイアログを表示
+        csv_path = pick_csv()
+        if not csv_path:
+            # キャンセル → デフォルトCSV → サンプルの順でフォールバック
+            if os.path.exists(CSV_PATH):
+                csv_path = CSV_PATH
+            elif os.path.exists(SAMPLE_CSV):
+                print(f"サンプルデータを使用: {SAMPLE_CSV}")
+                csv_path = SAMPLE_CSV
+            else:
+                print("CSVが選択されませんでした。終了します。")
+                sys.exit(0)
 
     # 指定CSVが存在しなければサンプルデータにフォールバック
     if not os.path.exists(csv_path):
