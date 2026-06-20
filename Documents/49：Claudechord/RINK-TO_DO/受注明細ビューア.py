@@ -118,7 +118,6 @@ def build_rows_html(rows):
   <td class="td-customer">{customer}</td>
   <td class="td-product">{product1}{p2}</td>
   <td class="td-qty">{qty}<span class="unit">{unit}</span></td>
-  <td class="td-amount">¥{amount}</td>
   <td class="td-delivery">{delivery}</td>
   <td class="td-reply">{d_reply}</td>
   <td class="td-version">{version}</td>
@@ -370,12 +369,11 @@ td {{
   <th onclick="sortTable(2)">得意先</th>
   <th onclick="sortTable(3)">製品名</th>
   <th onclick="sortTable(4)">数量</th>
-  <th onclick="sortTable(5)">受注金額</th>
-  <th onclick="sortTable(6)">納期</th>
+  <th onclick="sortTable(5)">納期</th>
   <th>納期返事</th>
   <th>版区</th>
   <th>工程進捗</th>
-  <th onclick="sortTable(10)">最終納品日</th>
+  <th onclick="sortTable(9)">最終納品日</th>
 </tr>
 </thead>
 <tbody id="tableBody">
@@ -461,12 +459,12 @@ function sortByDelivery() {{
   const rows = Array.from(tbody.querySelectorAll('tr'));
   const ths = document.querySelectorAll('thead th');
   ths.forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
-  ths[6].classList.add('sort-asc');
-  sortCol = 6;
+  ths[5].classList.add('sort-asc');
+  sortCol = 5;
   sortAsc = true;
   rows.sort((a, b) => {{
-    const av = a.cells[6] ? a.cells[6].textContent.trim() : '';
-    const bv = b.cells[6] ? b.cells[6].textContent.trim() : '';
+    const av = a.cells[5] ? a.cells[5].textContent.trim() : '';
+    const bv = b.cells[5] ? b.cells[5].textContent.trim() : '';
     return av.localeCompare(bv, 'ja', {{numeric: true}});
   }});
   rows.forEach(r => tbody.appendChild(r));
@@ -482,8 +480,8 @@ function sortByDefault() {{
   rows.sort((a, b) => {{
     const ac = a.cells[2] ? a.cells[2].textContent.trim() : '';
     const bc = b.cells[2] ? b.cells[2].textContent.trim() : '';
-    const ad = a.cells[6] ? a.cells[6].textContent.trim() : '';
-    const bd = b.cells[6] ? b.cells[6].textContent.trim() : '';
+    const ad = a.cells[5] ? a.cells[5].textContent.trim() : '';
+    const bd = b.cells[5] ? b.cells[5].textContent.trim() : '';
     return ac.localeCompare(bc, 'ja') || ad.localeCompare(bd, 'ja');
   }});
   rows.forEach(r => tbody.appendChild(r));
@@ -568,7 +566,6 @@ function buildTr(row) {{
   <td class="td-customer">${{escHtml((row[2]||'').trim())}}</td>
   <td class="td-product">${{escHtml((row[4]||'').trim())}}${{p2}}</td>
   <td class="td-qty">${{escHtml((row[6]||'').trim())}}<span class="unit">${{escHtml((row[7]||'').trim())}}</span></td>
-  <td class="td-amount">¥${{fmtAmount(row[9])}}</td>
   <td class="td-delivery">${{escHtml((row[10]||'').trim())}}</td>
   <td class="td-reply">${{escHtml((row[11]||'').trim())}}</td>
   <td class="td-version">${{escHtml((row[12]||'').trim())}}</td>
