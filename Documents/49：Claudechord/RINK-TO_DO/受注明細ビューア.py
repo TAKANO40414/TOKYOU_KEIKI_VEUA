@@ -80,7 +80,13 @@ def build_rows_html(rows):
         kanryo = get(row, KANRYO_COL)
         is_done = bool(kanryo)
 
-        juchu_no    = esc(get(row, 0))
+        raw_no = get(row, 0)
+        # 0000123456-000 → 123456-000（ハイフン前の先頭ゼロを除去）
+        if '-' in raw_no:
+            prefix, suffix = raw_no.split('-', 1)
+            juchu_no = esc(f'{int(prefix)}-{suffix}' if prefix.isdigit() else raw_no)
+        else:
+            juchu_no = esc(raw_no)
         juchu_date  = esc(get(row, 1))
         customer    = esc(get(row, 2))
         product1    = esc(get(row, 4))
