@@ -80,7 +80,9 @@ def build_rows_html(rows):
     parts = []
     for row in sorted_rows:
         kanryo = get(row, KANRYO_COL)
-        is_done = bool(kanryo)
+        # 工程の完了日に「未」が一つでもあれば完了扱いにしない
+        has_mi = any('未' in get(row, 16 + i * 4) for i in range(10))
+        is_done = bool(kanryo) and not has_mi
 
         raw_no = get(row, 0)
         # 0000123456-000 → 123456-000（ハイフン前の先頭ゼロを除去）
@@ -557,7 +559,8 @@ function fmtJuchuNo(s) {{
 
 function buildTr(row) {{
   const kanryo  = (row[54]||'').trim();
-  const isDone  = !!kanryo;
+  const hasMi   = Array.from({{length:10}}, (_,i) => (row[16+i*4]||'').trim()).some(d => d.includes('未'));
+  const isDone  = !!kanryo && !hasMi;
   const proc1   = escHtml((row[14]||'').trim());
   const product2 = (row[5]||'').trim();
   const p2 = product2 ? `<br><small class="product2">${{escHtml(product2)}}</small>` : '';
