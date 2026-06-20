@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""受注明細一覧ビューア - 得意先別・納期順ソート"""
+
+import csv
+import os
+import sys
+import webbrowser
+import html as html_mod
+import tempfile
+
+CSV_PATH = "/Users/takanoakihito/Desktop/受注明細一覧_20260620.csv"
+
+KANRYO_COL = 54  # 最終納品日
+
+PROCESS_DEFS = [
+    {'name': 14 + i * 4, 'machine': 15 + i * 4, 'date': 16 + i * 4, 'count': 17 + i * 4}
+    for i in range(10)
+]
+
+def get(row, idx, default=''):
+    try:
+        return row[idx].strip()
+    except IndexError:
+        return default
+
+def esc(s):
+    return html_mod.escape(str(s))
+
+def read_csv(path):
+    rows = []
+    with open(path, 'r', encoding='cp932', errors='replace') as f:
+        reader = csv.reader(f)
+        headers = next(reader)
+        for row in reader:
+            if any(c.strip() for c in row):
+                rows.append(row)
+    return headers, rows
+
+def format_amount(s):
+    try:
+        return f'{int(s.strip()):,}'
+    except Exception:
+        return s
+
+def build_process_html(row):
+    parts = []
+    for p in PROCESS_DEFS:
+        name = get(row, p['name'])
+        if not name:
+            continue
+        date = get(row, p['date'])
+        machine = get(row, p['machine'])
+        done = bool(date)
+        cls = 'proc-done' if done else 'proc-open'
+        title = esc(machine) if machine else ''
+        date_span = f'<span class="proc-date">{esc(date)}</span>' if done else ''
+        parts.append(
+            f'<span class="proc {cls}" title="{title}">'
+            f'{esc(name)}{date_span}'
+            f'</span>'
+        )
+    return ''.join(parts) if parts else '<span class="no-proc">-</span>'
+
+def build_rows_html(rows):
+    def sort_key(row):
+        return (get(row, 2), get(row, 10))
+
+    sorted_rows = sorted(rows, key=sort_key)
+    parts = []
+    for row in sorted_rows:
+        kanryo = get(row, KANRYO_COL)
+        is_done = bool(kanryo)
+
+        juchu_no    = esc(get(row, 0))
+        juchu_date  = esc(get(row, 1))
+        customer    = esc(get(row, 2))
+        product1    = esc(get(row, 4))
+        product2    = esc(get(row, 5))
+        qty         = esc(get(row, 6))
+        unit        = esc(get(row, 7))
+        amount      = format_amount(get(row, 9))
+        delivery    = esc(get(row, 10))
+        d_reply     = esc(get(row, 11))
+        version     = esc(get(row, 12))
+        nyuhi       = esc(get(row, 13))
+        kanryo_esc  = esc(kanryo)
+        state1      = esc(get(row, 57))
+        state2      = esc(get(row, 58))
+
+        proc_html   = build_process_html(row)
+        row_cls     = 'done' if is_done else ''
+        done_attr   = '1' if is_done else '0'
+
+        p2 = f'<br><small class="product2">{product2}</small>' if product2 else ''
+
+        parts.append(f'''
+<tr class="{row_cls}" data-done="{done_attr}">
+  <td class="td-no">{juchu_no}</td>
+  <td class="td-date">{juchu_date}</td>
+  <td class="td-customer">{customer}</td>
+  <td class="td-product">{product1}{p2}</td>
+  <td class="td-qty">{qty}<span class="unit">{unit}</span></td>
+  <td class="td-amount">¥{amount}</td>
+  <td class="td-delivery">{delivery}</td>
+  <td class="td-reply">{d_reply}</td>
+  <td class="td-version">{version}</td>
+  <td class="td-process">{proc_html}</td>
+  <td class="td-kanryo">{kanryo_esc}</td>
+</tr>''')
+
+    return '\n'.join(parts)
+
+def generate_html(csv_path):
+    headers, rows = read_csv(csv_path)
+    filename = os.path.basename(csv_path)
+    rows_html = build_rows_html(rows)
+    total = len(rows)
+
+    done_count = sum(1 for r in rows if get(r, KANRYO_COL))
+
+    return f'''<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>受注明細一覧 | {esc(filename)}</title>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{
+  font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif;
+  font-size: 12px;
+  background: #f0f2f5;
+  color: #222;
+}}
+header {{
+  background: #1a3a5c;
+  color: #fff;
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: 0 2px 6px rgba(0,0,0,.3);
+}}
+header h1 {{
+  font-size: 16px;
+  font-weight: bold;
+  flex: 1;
+}}
+.stats {{ font-size: 12px; color: #acd; white-space: nowrap; }}
+.controls {{
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  background: #fff;
+  border-bottom: 1px solid #ddd;
+  flex-wrap: wrap;
+}}
+.btn {{
+  padding: 6px 16px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  transition: opacity .15s;
+}}
+.btn:hover {{ opacity: .85; }}
+.btn-hide {{
+  background: #e8534a;
+  color: #fff;
+}}
+.btn-show {{
+  background: #4a90d9;
+  color: #fff;
+}}
+.btn-all {{
+  background: #555;
+  color: #fff;
+}}
+label.filter-label {{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #333;
+}}
+label.filter-label input {{ cursor: pointer; }}
+.search-box {{
+  padding: 5px 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 12px;
+  width: 200px;
+}}
+.count-info {{
+  font-size: 12px;
+  color: #666;
+  margin-left: auto;
+}}
+.table-wrap {{
+  overflow-x: auto;
+  padding: 10px 20px 30px;
+}}
+table {{
+  border-collapse: collapse;
+  width: 100%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,.1);
+  border-radius: 4px;
+  overflow: hidden;
+}}
+thead tr {{
+  background: #2c5282;
+  color: #fff;
+  text-align: left;
+  white-space: nowrap;
+}}
+thead th {{
+  padding: 8px 10px;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: .3px;
+  cursor: pointer;
+  user-select: none;
+}}
+thead th:hover {{ background: #2a4a72; }}
+thead th.sort-asc::after {{ content: " ▲"; font-size: 9px; }}
+thead th.sort-desc::after {{ content: " ▼"; font-size: 9px; }}
+tbody tr {{
+  border-bottom: 1px solid #e8eaf0;
+  transition: background .1s;
+}}
+tbody tr:hover {{ background: #f0f4ff !important; }}
+tbody tr.done {{
+  background: #e8f5e9;
+  color: #558;
+}}
+tbody tr.done td {{ color: #667; }}
+tbody tr.done .td-kanryo {{
+  color: #2e7d32;
+  font-weight: bold;
+}}
+td {{
+  padding: 7px 10px;
+  vertical-align: top;
+  font-size: 11.5px;
+}}
+.td-no {{ white-space: nowrap; font-family: monospace; font-size: 11px; color: #555; }}
+.td-date {{ white-space: nowrap; }}
+.td-customer {{ font-weight: 600; white-space: nowrap; min-width: 120px; }}
+.td-product {{ min-width: 160px; max-width: 240px; }}
+.product2 {{ color: #888; font-size: 10px; }}
+.td-qty {{ white-space: nowrap; text-align: right; }}
+.unit {{ color: #888; margin-left: 2px; }}
+.td-amount {{ white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }}
+.td-delivery {{ white-space: nowrap; font-weight: 600; color: #c0392b; }}
+.td-reply {{ white-space: nowrap; }}
+.td-version {{ white-space: nowrap; }}
+.td-process {{ min-width: 200px; max-width: 380px; }}
+.td-kanryo {{ white-space: nowrap; min-width: 90px; }}
+.proc {{
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  margin: 2px 2px 2px 0;
+  line-height: 1.6;
+  white-space: nowrap;
+}}
+.proc-done {{
+  background: #c8e6c9;
+  color: #1b5e20;
+  border: 1px solid #a5d6a7;
+}}
+.proc-open {{
+  background: #fff3e0;
+  color: #e65100;
+  border: 1px solid #ffcc80;
+}}
+.proc-date {{
+  display: block;
+  font-size: 9px;
+  color: #388e3c;
+  margin-top: 1px;
+}}
+.no-proc {{ color: #bbb; }}
+</style>
+</head>
+<body>
+<header>
+  <h1>受注明細一覧</h1>
+  <span class="stats">全 {total} 件 ／ 完了 {done_count} 件 ／ 進行中 {total - done_count} 件</span>
+  <span style="font-size:11px;color:#9bc">{esc(filename)}</span>
+</header>
+<div class="controls">
+  <button class="btn btn-hide" onclick="hideDone()">完了済みを非表示</button>
+  <button class="btn btn-show" onclick="showDone()">完了済みを表示</button>
+  <button class="btn btn-all" onclick="showAll()">すべて表示</button>
+  <span style="width:1px;height:24px;background:#ddd;display:inline-block;"></span>
+  <input class="search-box" type="text" id="searchBox" placeholder="得意先・製品名で絞込..." oninput="filterTable()">
+  <span class="count-info" id="countInfo">表示中: {total} 件</span>
+</div>
+<div class="table-wrap">
+<table id="mainTable">
+<thead>
+<tr>
+  <th onclick="sortTable(0)">受注No</th>
+  <th onclick="sortTable(1)">受注日</th>
+  <th onclick="sortTable(2)">得意先</th>
+  <th onclick="sortTable(3)">製品名</th>
+  <th onclick="sortTable(4)">数量</th>
+  <th onclick="sortTable(5)">受注金額</th>
+  <th onclick="sortTable(6)">納期</th>
+  <th>納期返事</th>
+  <th>版区</th>
+  <th>工程進捗</th>
+  <th onclick="sortTable(10)">最終納品日</th>
+</tr>
+</thead>
+<tbody id="tableBody">
+{rows_html}
+</tbody>
+</table>
+</div>
+<script>
+let hidingDone = false;
+let searchText = '';
+
+function hideDone() {{
+  hidingDone = true;
+  applyFilters();
+}}
+function showDone() {{
+  hidingDone = false;
+  applyFilters();
+}}
+function showAll() {{
+  hidingDone = false;
+  searchText = '';
+  document.getElementById('searchBox').value = '';
+  applyFilters();
+}}
+function filterTable() {{
+  searchText = document.getElementById('searchBox').value.toLowerCase();
+  applyFilters();
+}}
+
+function applyFilters() {{
+  const rows = document.querySelectorAll('#tableBody tr');
+  let visible = 0;
+  rows.forEach(tr => {{
+    const done = tr.dataset.done === '1';
+    const text = tr.textContent.toLowerCase();
+    const matchSearch = !searchText || text.includes(searchText);
+    const matchDone = !hidingDone || !done;
+    const show = matchSearch && matchDone;
+    tr.style.display = show ? '' : 'none';
+    if (show) visible++;
+  }});
+  document.getElementById('countInfo').textContent = '表示中: ' + visible + ' 件';
+}}
+
+let sortCol = -1;
+let sortAsc = true;
+
+function sortTable(col) {{
+  const tbody = document.getElementById('tableBody');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const ths = document.querySelectorAll('thead th');
+
+  if (sortCol === col) {{
+    sortAsc = !sortAsc;
+  }} else {{
+    sortCol = col;
+    sortAsc = true;
+  }}
+
+  ths.forEach((th, i) => {{
+    th.classList.remove('sort-asc', 'sort-desc');
+    if (i === col) th.classList.add(sortAsc ? 'sort-asc' : 'sort-desc');
+  }});
+
+  rows.sort((a, b) => {{
+    const av = a.cells[col] ? a.cells[col].textContent.trim() : '';
+    const bv = b.cells[col] ? b.cells[col].textContent.trim() : '';
+    const cmp = av.localeCompare(bv, 'ja', {{numeric: true}});
+    return sortAsc ? cmp : -cmp;
+  }});
+
+  rows.forEach(r => tbody.appendChild(r));
+  applyFilters();
+}}
+</script>
+</body>
+</html>'''
+
+def main():
+    csv_path = CSV_PATH
+    if len(sys.argv) > 1:
+        csv_path = sys.argv[1]
+
+    if not os.path.exists(csv_path):
+        print(f"エラー: ファイルが見つかりません: {csv_path}")
+        sys.exit(1)
+
+    print(f"読み込み中: {csv_path}")
+    html = generate_html(csv_path)
+
+    out_path = os.path.splitext(csv_path)[0] + '_ビューア.html'
+    with open(out_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+
+    print(f"出力: {out_path}")
+    import subprocess
+    subprocess.run(['open', out_path])
+    print("ブラウザで開きました。")
+
+if __name__ == '__main__':
+    main()
