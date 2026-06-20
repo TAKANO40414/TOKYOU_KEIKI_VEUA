@@ -279,20 +279,21 @@ td {{
   white-space: nowrap;
 }}
 .proc-done {{
-  background: #c8e6c9;
-  color: #1b5e20;
-  border: 1px solid #a5d6a7;
+  background: #ffcdd2;
+  color: #b71c1c;
+  border: 1px solid #000;
+  font-weight: 600;
 }}
 .proc-kakutei {{
   background: #ffcdd2;
   color: #b71c1c;
-  border: 1px solid #ef9a9a;
+  border: 1px solid #000;
   font-weight: 600;
 }}
 .proc-mi {{
   background: #eceff1;
   color: #546e7a;
-  border: 1px solid #cfd8dc;
+  border: 1px solid #000;
 }}
 .proc-date {{
   display: block;
