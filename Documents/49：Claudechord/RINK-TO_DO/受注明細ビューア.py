@@ -99,11 +99,12 @@ def build_rows_html(rows):
         proc_html   = build_process_html(row)
         row_cls     = 'done' if is_done else ''
         done_attr   = '1' if is_done else '0'
+        proc1_val   = esc(get(row, 14))
 
         p2 = f'<br><small class="product2">{product2}</small>' if product2 else ''
 
         parts.append(f'''
-<tr class="{row_cls}" data-done="{done_attr}">
+<tr class="{row_cls}" data-done="{done_attr}" data-proc1="{proc1_val}">
   <td class="td-no">{juchu_no}</td>
   <td class="td-date">{juchu_date}</td>
   <td class="td-customer">{customer}</td>
@@ -126,6 +127,12 @@ def generate_html(csv_path):
     total = len(rows)
 
     done_count = sum(1 for r in rows if get(r, KANRYO_COL))
+
+    # 工程１の選択肢（ソート済み・重複なし）
+    proc1_values = sorted(set(get(r, 14) for r in rows if get(r, 14)))
+    proc1_options = '<option value="">すべて</option>' + ''.join(
+        f'<option value="{esc(v)}">{esc(v)}</option>' for v in proc1_values
+    )
 
     return f'''<!DOCTYPE html>
 <html lang="ja">
@@ -316,6 +323,13 @@ td {{
   <button class="btn btn-show" onclick="showDone()">完了済みを表示</button>
   <button class="btn btn-all" onclick="showAll()">すべて表示</button>
   <span style="width:1px;height:24px;background:#ddd;display:inline-block;"></span>
+  <label style="font-size:12px;color:#333;display:flex;align-items:center;gap:6px;">
+    工程１
+    <select id="proc1Select" onchange="applyFilters()" style="padding:5px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px;font-family:inherit;">
+      {proc1_options}
+    </select>
+  </label>
+  <span style="width:1px;height:24px;background:#ddd;display:inline-block;"></span>
   <input class="search-box" type="text" id="searchBox" placeholder="得意先・製品名で絞込..." oninput="filterTable()">
   <span class="count-info" id="countInfo">表示中: {total} 件</span>
 </div>
@@ -357,6 +371,7 @@ function showAll() {{
   hidingDone = false;
   searchText = '';
   document.getElementById('searchBox').value = '';
+  document.getElementById('proc1Select').value = '';
   applyFilters();
 }}
 function filterTable() {{
@@ -365,14 +380,17 @@ function filterTable() {{
 }}
 
 function applyFilters() {{
+  const proc1Filter = document.getElementById('proc1Select').value;
   const rows = document.querySelectorAll('#tableBody tr');
   let visible = 0;
   rows.forEach(tr => {{
     const done = tr.dataset.done === '1';
     const text = tr.textContent.toLowerCase();
+    const proc1 = tr.dataset.proc1 || '';
     const matchSearch = !searchText || text.includes(searchText);
     const matchDone = !hidingDone || !done;
-    const show = matchSearch && matchDone;
+    const matchProc1 = !proc1Filter || proc1 === proc1Filter;
+    const show = matchSearch && matchDone && matchProc1;
     tr.style.display = show ? '' : 'none';
     if (show) visible++;
   }});
