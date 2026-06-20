@@ -482,14 +482,21 @@ function sortByDefault() {{
 </body>
 </html>'''
 
+SAMPLE_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "サンプルデータ.csv")
+
 def main():
     csv_path = CSV_PATH
     if len(sys.argv) > 1:
         csv_path = sys.argv[1]
 
+    # 指定CSVが存在しなければサンプルデータにフォールバック
     if not os.path.exists(csv_path):
-        print(f"エラー: ファイルが見つかりません: {csv_path}")
-        sys.exit(1)
+        if os.path.exists(SAMPLE_CSV):
+            print(f"元CSVが見つからないためサンプルデータを使用: {SAMPLE_CSV}")
+            csv_path = SAMPLE_CSV
+        else:
+            print(f"エラー: ファイルが見つかりません: {csv_path}")
+            sys.exit(1)
 
     print(f"読み込み中: {csv_path}")
     html = generate_html(csv_path)
