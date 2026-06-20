@@ -196,6 +196,14 @@ header h1 {{
   background: #555;
   color: #fff;
 }}
+.btn-sort-delivery {{
+  background: #2e7d32;
+  color: #fff;
+}}
+.btn-sort-default {{
+  background: #6a4c93;
+  color: #fff;
+}}
 label.filter-label {{
   display: flex;
   align-items: center;
@@ -323,6 +331,9 @@ td {{
   <button class="btn btn-show" onclick="showDone()">完了済みを表示</button>
   <button class="btn btn-all" onclick="showAll()">すべて表示</button>
   <span style="width:1px;height:24px;background:#ddd;display:inline-block;"></span>
+  <button class="btn btn-sort-delivery" onclick="sortByDelivery()">納期順 ▲</button>
+  <button class="btn btn-sort-default" onclick="sortByDefault()">得意先＋納期順</button>
+  <span style="width:1px;height:24px;background:#ddd;display:inline-block;"></span>
   <label style="font-size:12px;color:#333;display:flex;align-items:center;gap:6px;">
     工程１
     <select id="proc1Select" onchange="applyFilters()" style="padding:5px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px;font-family:inherit;">
@@ -424,6 +435,40 @@ function sortTable(col) {{
     return sortAsc ? cmp : -cmp;
   }});
 
+  rows.forEach(r => tbody.appendChild(r));
+  applyFilters();
+}}
+
+function sortByDelivery() {{
+  const tbody = document.getElementById('tableBody');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const ths = document.querySelectorAll('thead th');
+  ths.forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
+  ths[6].classList.add('sort-asc');
+  sortCol = 6;
+  sortAsc = true;
+  rows.sort((a, b) => {{
+    const av = a.cells[6] ? a.cells[6].textContent.trim() : '';
+    const bv = b.cells[6] ? b.cells[6].textContent.trim() : '';
+    return av.localeCompare(bv, 'ja', {{numeric: true}});
+  }});
+  rows.forEach(r => tbody.appendChild(r));
+  applyFilters();
+}}
+
+function sortByDefault() {{
+  const tbody = document.getElementById('tableBody');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const ths = document.querySelectorAll('thead th');
+  ths.forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
+  sortCol = -1;
+  rows.sort((a, b) => {{
+    const ac = a.cells[2] ? a.cells[2].textContent.trim() : '';
+    const bc = b.cells[2] ? b.cells[2].textContent.trim() : '';
+    const ad = a.cells[6] ? a.cells[6].textContent.trim() : '';
+    const bd = b.cells[6] ? b.cells[6].textContent.trim() : '';
+    return ac.localeCompare(bc, 'ja') || ad.localeCompare(bd, 'ja');
+  }});
   rows.forEach(r => tbody.appendChild(r));
   applyFilters();
 }}
