@@ -45,10 +45,12 @@ def format_amount(s):
 
 def proc_class(date):
     if not date:
-        return 'proc-mi'       # 未（日付なし）
-    if '確' in date:
-        return 'proc-kakutei'  # 確定
-    return 'proc-done'         # 完了
+        return 'proc-mi'
+    if '完' in date or '確' in date:
+        return 'proc-done'   # 完了・確定 → 赤
+    if '進' in date:
+        return 'proc-shin'   # 進行中 → オレンジ
+    return 'proc-mi'         # 未・削・その他 → グレー
 
 def build_process_html(row):
     parts = []
@@ -284,11 +286,10 @@ td {{
   border: 1px solid #000;
   font-weight: 600;
 }}
-.proc-kakutei {{
-  background: #ffcdd2;
-  color: #b71c1c;
+.proc-shin {{
+  background: #fff9c4;
+  color: #f57f17;
   border: 1px solid #000;
-  font-weight: 600;
 }}
 .proc-mi {{
   background: #eceff1;
