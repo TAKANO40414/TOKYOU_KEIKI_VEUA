@@ -389,19 +389,19 @@ td {{
 </table>
 </div>
 <script>
-let hidingDone = false;
+let doneFilter = 'all'; // 'all' | 'hide_done' | 'only_done'
 let searchText = '';
 
 function hideDone() {{
-  hidingDone = true;
+  doneFilter = 'hide_done';
   applyFilters();
 }}
 function showDone() {{
-  hidingDone = false;
+  doneFilter = 'only_done';
   applyFilters();
 }}
 function showAll() {{
-  hidingDone = false;
+  doneFilter = 'all';
   searchText = '';
   document.getElementById('searchBox').value = '';
   document.getElementById('proc1Select').value = '';
@@ -421,7 +421,9 @@ function applyFilters() {{
     const text = tr.textContent.toLowerCase();
     const proc1 = tr.dataset.proc1 || '';
     const matchSearch = !searchText || text.includes(searchText);
-    const matchDone = !hidingDone || !done;
+    const matchDone = doneFilter === 'all' ||
+                      (doneFilter === 'hide_done' && !done) ||
+                      (doneFilter === 'only_done' && done);
     const matchProc1 = !proc1Filter || proc1 === proc1Filter;
     const show = matchSearch && matchDone && matchProc1;
     tr.style.display = show ? '' : 'none';
@@ -607,7 +609,7 @@ function renderCSVData(dataRows) {{
   document.querySelector('.stats').textContent = `全 ${{total}} 件 ／ 完了 ${{done}} 件 ／ 進行中 ${{total-done}} 件`;
 
   // フィルター・ソートをリセット
-  hidingDone = false; searchText = ''; sortCol = -1;
+  doneFilter = 'all'; searchText = ''; sortCol = -1;
   document.getElementById('searchBox').value = '';
   document.querySelectorAll('thead th').forEach(th=>th.classList.remove('sort-asc','sort-desc'));
   applyFilters();
