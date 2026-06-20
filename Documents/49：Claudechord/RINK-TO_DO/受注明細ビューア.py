@@ -99,7 +99,7 @@ def build_rows_html(rows):
         customer    = esc(get(row, 2))
         product1    = esc(get(row, 4))
         product2    = esc(get(row, 5))
-        qty         = esc(get(row, 6))
+        qty         = esc(format_amount(get(row, 6)))
         unit        = esc(get(row, 7))
         amount      = format_amount(get(row, 9))
         delivery    = esc(get(row, 10))
@@ -579,7 +579,7 @@ function buildTr(row) {{
   <td class="td-date">${{escHtml((row[1]||'').trim())}}</td>
   <td class="td-customer">${{escHtml((row[2]||'').trim())}}</td>
   <td class="td-product">${{escHtml((row[4]||'').trim())}}${{p2}}</td>
-  <td class="td-qty">${{escHtml((row[6]||'').trim())}}<span class="unit">${{escHtml((row[7]||'').trim())}}</span></td>
+  <td class="td-qty">${{fmtAmount(row[6])}}<span class="unit">${{escHtml((row[7]||'').trim())}}</span></td>
   <td class="td-delivery">${{escHtml((row[10]||'').trim())}}</td>
   <td class="td-reply">${{escHtml((row[11]||'').trim())}}</td>
   <td class="td-version">${{escHtml((row[12]||'').trim())}}</td>
