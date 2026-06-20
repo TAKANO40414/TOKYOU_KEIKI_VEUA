@@ -43,6 +43,13 @@ def format_amount(s):
     except Exception:
         return s
 
+def proc_class(date):
+    if not date:
+        return 'proc-mi'       # 未（日付なし）
+    if '確' in date:
+        return 'proc-kakutei'  # 確定
+    return 'proc-done'         # 完了
+
 def build_process_html(row):
     parts = []
     for p in PROCESS_DEFS:
@@ -51,10 +58,9 @@ def build_process_html(row):
             continue
         date = get(row, p['date'])
         machine = get(row, p['machine'])
-        done = bool(date)
-        cls = 'proc-done' if done else 'proc-open'
+        cls = proc_class(date)
         title = esc(machine) if machine else ''
-        date_span = f'<span class="proc-date">{esc(date)}</span>' if done else ''
+        date_span = f'<span class="proc-date">{esc(date)}</span>' if date else ''
         parts.append(
             f'<span class="proc {cls}" title="{title}">'
             f'{esc(name)}{date_span}'
@@ -277,15 +283,21 @@ td {{
   color: #1b5e20;
   border: 1px solid #a5d6a7;
 }}
-.proc-open {{
-  background: #fff3e0;
-  color: #e65100;
-  border: 1px solid #ffcc80;
+.proc-kakutei {{
+  background: #ffcdd2;
+  color: #b71c1c;
+  border: 1px solid #ef9a9a;
+  font-weight: 600;
+}}
+.proc-mi {{
+  background: #eceff1;
+  color: #546e7a;
+  border: 1px solid #cfd8dc;
 }}
 .proc-date {{
   display: block;
   font-size: 9px;
-  color: #388e3c;
+  color: #555;
   margin-top: 1px;
 }}
 .no-proc {{ color: #bbb; }}
