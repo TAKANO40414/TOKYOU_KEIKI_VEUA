@@ -30,13 +30,20 @@ def esc(s):
     return html_mod.escape(str(s))
 
 def read_csv(path):
-    rows = []
+    for enc in ('utf-8-sig', 'cp932', 'utf-8', 'shift-jis'):
+        try:
+            with open(path, 'r', encoding=enc) as f:
+                reader = csv.reader(f)
+                headers = next(reader)
+                rows = [row for row in reader if any(c.strip() for c in row)]
+            return headers, rows
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    # どのエンコーディングでも読めない場合はreplaceで強行
     with open(path, 'r', encoding='cp932', errors='replace') as f:
         reader = csv.reader(f)
         headers = next(reader)
-        for row in reader:
-            if any(c.strip() for c in row):
-                rows.append(row)
+        rows = [row for row in reader if any(c.strip() for c in row)]
     return headers, rows
 
 def format_amount(s):
