@@ -79,7 +79,7 @@ def build_process_html(row):
         )
     return ''.join(parts) if parts else '<span class="no-proc">-</span>'
 
-def build_rows_html(rows):
+def build_rows_html(rows, tanto_col=-1):
     def sort_key(row):
         return (get(row, 2), get(row, 10))
 
@@ -96,12 +96,13 @@ def build_rows_html(rows):
         is_done = (bool(kanryo) or all_kan) and not has_mi
 
         raw_no = get(row, 0)
-        # 0000123456-000 → 123456-000（ハイフン前の先頭ゼロを除去）
+        # 0000123456-000 → 6桁を大きく、-000を2行目右寄せ
         if '-' in raw_no:
             prefix, suffix = raw_no.split('-', 1)
-            juchu_no = esc(f'{int(prefix)}-{suffix}' if prefix.isdigit() else raw_no)
+            main = str(int(prefix)) if prefix.isdigit() else prefix
+            juchu_no = f'<span class="no-main">{esc(main)}</span><span class="no-sub">{esc(suffix)}</span>'
         else:
-            juchu_no = esc(raw_no)
+            juchu_no = f'<span class="no-main">{esc(raw_no)}</span>'
         juchu_date  = esc(get(row, 1))
         customer    = esc(get(row, 2))
         product1    = esc(get(row, 4))
@@ -123,12 +124,15 @@ def build_rows_html(rows):
         proc1_val   = esc(get(row, 14))
 
         p2 = f'<br><small class="product2">{product2}</small>' if product2 else ''
+        tanto_val = esc(get(row, tanto_col)) if tanto_col >= 0 else ''
+        tanto_td = f'<td class="td-tanto"><span class="tanto-badge">{tanto_val}</span></td>' if tanto_col >= 0 else ''
 
         parts.append(f'''
 <tr class="{row_cls}" data-done="{done_attr}" data-proc1="{proc1_val}">
   <td class="td-no">{juchu_no}</td>
   <td class="td-date">{juchu_date}</td>
   <td class="td-customer">{customer}</td>
+  {tanto_td}
   <td class="td-product">{product1}{p2}</td>
   <td class="td-qty">{qty}<span class="unit">{unit}</span></td>
   <td class="td-delivery">{delivery}</td>
@@ -143,10 +147,24 @@ def build_rows_html(rows):
 def generate_html(csv_path):
     headers, rows = read_csv(csv_path)
     filename = os.path.basename(csv_path)
-    rows_html = build_rows_html(rows)
+
+    # 担当者列を検出
+    tanto_col = next((i for i, h in enumerate(headers) if '担当' in h), -1)
+    has_tanto = tanto_col >= 0
+
+    rows_html = build_rows_html(rows, tanto_col)
     total = len(rows)
 
     done_count = sum(1 for r in rows if get(r, KANRYO_COL))
+
+    tanto_th = '<th>担当</th>' if has_tanto else ''
+    has_tanto_js = 'true' if has_tanto else 'false'
+    tanto_col_js = tanto_col
+    _o = 1 if has_tanto else 0  # column offset when tanto exists
+    col_product  = 3 + _o
+    col_qty      = 4 + _o
+    col_delivery = 5 + _o
+    col_kanryo   = 9 + _o
 
     # 工程１の選択肢（ソート済み・重複なし）
     proc1_values = sorted(set(get(r, 14) for r in rows if get(r, 14)))
@@ -163,218 +181,243 @@ def generate_html(csv_path):
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
 body {{
   font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif;
-  font-size: 12px;
-  background: #1a1a2e;
-  color: #d0d0e0;
+  font-size: 13px;
+  background: #eaeded;
+  color: #0f1111;
 }}
 header {{
-  background: #0f0f1a;
-  color: #e0e0f0;
-  padding: 12px 20px;
+  background: #232f3e;
+  color: #fff;
+  padding: 10px 24px;
   display: flex;
   align-items: center;
   gap: 20px;
   position: sticky;
   top: 0;
   z-index: 100;
-  box-shadow: 0 2px 8px rgba(0,0,0,.6);
-  border-bottom: 1px solid #2a2a4a;
+  box-shadow: 0 2px 6px rgba(0,0,0,.4);
 }}
 header h1 {{
-  font-size: 16px;
-  font-weight: bold;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: .5px;
   flex: 1;
 }}
-.stats {{ font-size: 12px; color: #7a9bc0; white-space: nowrap; }}
+.stats {{ font-size: 12px; color: #febd69; white-space: nowrap; }}
 .controls {{
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 20px;
-  background: #16213e;
-  border-bottom: 1px solid #2a2a4a;
+  gap: 8px;
+  padding: 9px 24px;
+  background: #fff;
+  border-bottom: 1px solid #ddd;
   flex-wrap: wrap;
+  box-shadow: 0 1px 3px rgba(0,0,0,.07);
+  position: sticky;
+  top: 46px;
+  z-index: 99;
 }}
 .btn {{
-  padding: 6px 16px;
-  border: none;
-  border-radius: 4px;
+  padding: 5px 13px;
+  border-radius: 3px;
   cursor: pointer;
   font-size: 12px;
   font-family: inherit;
-  transition: opacity .15s;
+  font-weight: 600;
+  border: 1px solid;
+  transition: filter .1s;
+  white-space: nowrap;
 }}
-.btn:hover {{ opacity: .8; }}
+.btn:hover {{ filter: brightness(.92); }}
+.btn-load {{
+  background: #FF9900;
+  border-color: #E47911;
+  color: #111;
+}}
 .btn-hide {{
-  background: #c0392b;
-  color: #fff;
+  background: #fff3f3;
+  border-color: #e57373;
+  color: #c0392b;
 }}
 .btn-show {{
-  background: #2980b9;
-  color: #fff;
+  background: #f0f8ff;
+  border-color: #5b9bd5;
+  color: #007185;
 }}
 .btn-all {{
-  background: #444466;
-  color: #ccc;
+  background: #f7f7f7;
+  border-color: #bbb;
+  color: #444;
 }}
 .btn-sort-delivery {{
-  background: #1e7e34;
-  color: #fff;
+  background: #f0faf0;
+  border-color: #6abf69;
+  color: #1e7e34;
 }}
 .btn-sort-default {{
-  background: #5a3e82;
-  color: #fff;
+  background: #f5f0ff;
+  border-color: #9b73d8;
+  color: #5a3e82;
 }}
-.btn-load {{
-  background: #c0711a;
-  color: #fff;
-  font-weight: bold;
-}}
-label.filter-label {{
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  cursor: pointer;
-  color: #aab;
-}}
-label.filter-label input {{ cursor: pointer; }}
+.sep {{ width: 1px; height: 22px; background: #ddd; display: inline-block; flex-shrink: 0; }}
 .search-box {{
   padding: 5px 10px;
-  border: 1px solid #3a3a5a;
-  border-radius: 4px;
+  border: 1px solid #aaa;
+  border-radius: 3px;
   font-size: 12px;
-  width: 200px;
-  background: #0f0f1a;
-  color: #d0d0e0;
+  width: 210px;
+  background: #fff;
+  color: #0f1111;
 }}
+.search-box:focus {{ outline: none; border-color: #FF9900; box-shadow: 0 0 0 2px rgba(255,153,0,.2); }}
 .count-info {{
   font-size: 12px;
-  color: #778;
+  color: #767676;
   margin-left: auto;
+  white-space: nowrap;
 }}
 .table-wrap {{
   overflow-x: auto;
-  padding: 10px 20px 30px;
+  padding: 14px 24px 40px;
 }}
 table {{
   border-collapse: collapse;
   width: 100%;
-  background: #16213e;
-  box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,.1);
   border-radius: 4px;
   overflow: hidden;
+  font-size: 12px;
 }}
 thead tr {{
-  background: #0f3460;
-  color: #c8d8f0;
+  background: #f3f3f3;
+  color: #0f1111;
   text-align: left;
-  white-space: nowrap;
+  border-bottom: 2px solid #ddd;
 }}
 thead th {{
-  padding: 8px 10px;
-  font-weight: 600;
-  font-size: 11px;
-  letter-spacing: .3px;
+  padding: 9px 11px;
+  font-weight: 700;
+  font-size: 11.5px;
+  letter-spacing: .2px;
   cursor: pointer;
   user-select: none;
+  white-space: nowrap;
+  border-right: 1px solid #e0e0e0;
 }}
-thead th:hover {{ background: #0a2a50; }}
-thead th.sort-asc::after {{ content: " ▲"; font-size: 9px; }}
-thead th.sort-desc::after {{ content: " ▼"; font-size: 9px; }}
+thead th:last-child {{ border-right: none; }}
+thead th:hover {{ background: #e8e8e8; }}
+thead th.sort-asc::after {{ content: " ▲"; font-size: 9px; color: #007185; }}
+thead th.sort-desc::after {{ content: " ▼"; font-size: 9px; color: #007185; }}
 tbody tr {{
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid #f0f0f0;
   transition: background .1s;
 }}
-tbody tr:hover {{ background: #1e2d50 !important; }}
+tbody tr:nth-child(even) {{ background: #fafafa; }}
+tbody tr:hover {{ background: #f0f7ff !important; }}
 tbody tr.done {{
-  background: #1a2a1a;
-  color: #7a9a7a;
+  background: #f0faf0;
 }}
-tbody tr.done td {{ color: #6a8a6a; }}
+tbody tr.done:nth-child(even) {{ background: #e8f5e8; }}
+tbody tr.done td {{ color: #2d7a2d; }}
 tbody tr.done .td-kanryo {{
-  color: #4caf50;
-  font-weight: bold;
+  color: #27ae60;
+  font-weight: 700;
 }}
+tbody tr.done:hover {{ background: #d8f0d8 !important; }}
 td {{
-  padding: 7px 10px;
+  padding: 8px 11px;
   vertical-align: top;
-  font-size: 11.5px;
+  border-right: 1px solid #f0f0f0;
 }}
-.td-no {{ white-space: nowrap; font-family: monospace; font-size: 11px; color: #778; }}
-.td-date {{ white-space: nowrap; }}
-.td-customer {{ font-weight: 600; white-space: nowrap; min-width: 120px; color: #b0c4de; }}
+td:last-child {{ border-right: none; }}
+.td-no {{ white-space: nowrap; font-family: monospace; text-align: right; }}
+.no-main {{ font-size: 14px; font-weight: 700; color: #007185; display: block; text-align: right; }}
+.no-sub  {{ font-size: 12px; font-weight: 600; color: #aaa; display: block; text-align: right; }}
+.td-date {{ white-space: nowrap; color: #555; font-size: 11px; }}
+.td-customer {{ font-weight: 700; white-space: nowrap; min-width: 120px; color: #0f1111; }}
+.td-tanto {{ white-space: nowrap; min-width: 60px; text-align: center; }}
+.tanto-badge {{
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 12px;
+  background: #e8f4fd;
+  color: #1a6fa8;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid #b8d9f0;
+}}
 .td-product {{ min-width: 160px; max-width: 240px; }}
-.product2 {{ color: #667; font-size: 10px; }}
+.product2 {{ color: #999; font-size: 10px; }}
 .td-qty {{ white-space: nowrap; text-align: right; }}
-.unit {{ color: #667; margin-left: 2px; }}
-.td-amount {{ white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }}
-.td-delivery {{ white-space: nowrap; font-weight: 600; color: #e57373; }}
-.td-reply {{ white-space: nowrap; }}
-.td-version {{ white-space: nowrap; }}
+.unit {{ color: #999; margin-left: 2px; font-size: 11px; }}
+.td-delivery {{ white-space: nowrap; font-weight: 700; color: #c0392b; }}
+.td-reply {{ white-space: nowrap; color: #555; }}
+.td-version {{ white-space: nowrap; color: #555; }}
 .td-process {{ min-width: 200px; max-width: 380px; }}
 .td-kanryo {{ white-space: nowrap; min-width: 90px; }}
 .proc {{
   display: inline-block;
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 3px;
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 10px;
   margin: 2px 2px 2px 0;
   line-height: 1.6;
   white-space: nowrap;
-}}
-.proc-done {{
-  background: #4a1010;
-  color: #ff8a80;
-  border: 1px solid #888;
   font-weight: 600;
 }}
+.proc-done {{
+  background: #fde8e8;
+  color: #c0392b;
+  border: 1px solid #f5a8a8;
+}}
 .proc-shin {{
-  background: #3a2e00;
-  color: #ffd54f;
-  border: 1px solid #888;
+  background: #fff4e0;
+  color: #b45309;
+  border: 1px solid #f6c975;
 }}
 .proc-mi {{
-  background: #1e2a38;
-  color: #7a9ab0;
-  border: 1px solid #556;
+  background: #f3f3f3;
+  color: #767676;
+  border: 1px solid #ccc;
 }}
 .proc-date {{
   display: block;
   font-size: 9px;
-  color: #aaa;
+  color: #999;
   margin-top: 1px;
+  font-weight: 400;
 }}
-.no-proc {{ color: #445; }}
+.no-proc {{ color: #ccc; font-size: 11px; }}
 </style>
 </head>
 <body>
 <header>
   <h1>受注明細一覧</h1>
-  <span class="stats">全 {total} 件 ／ 完了 {done_count} 件 ／ 進行中 {total - done_count} 件</span>
-  <span style="font-size:11px;color:#9bc">{esc(filename)}</span>
+  <span class="stats">全 {total} 件 &nbsp;｜&nbsp; 完了 {done_count} 件 &nbsp;｜&nbsp; 進行中 {total - done_count} 件</span>
+  <span style="font-size:11px;color:#febd69;opacity:.7;">{esc(filename)}</span>
 </header>
 <div class="controls">
   <label class="btn btn-load" style="cursor:pointer;">
-    📂 CSVを読み込む
+    📂 CSV読込
     <input type="file" id="csvFileInput" accept=".csv" onchange="onCsvSelected(event)" style="display:none;">
   </label>
-  <span style="width:1px;height:24px;background:#3a3a5a;display:inline-block;"></span>
-  <button class="btn btn-hide" onclick="hideDone()">完了済みを非表示</button>
-  <button class="btn btn-show" onclick="showDone()">完了済みを表示</button>
+  <span class="sep"></span>
+  <button class="btn btn-hide" onclick="hideDone()">完了を非表示</button>
+  <button class="btn btn-show" onclick="showDone()">完了のみ表示</button>
   <button class="btn btn-all" onclick="showAll()">すべて表示</button>
-  <span style="width:1px;height:24px;background:#3a3a5a;display:inline-block;"></span>
-  <button class="btn btn-sort-delivery" onclick="sortByDelivery()">納期順 ▲</button>
+  <span class="sep"></span>
+  <button class="btn btn-sort-delivery" onclick="sortByDelivery()">納期順 ↑</button>
   <button class="btn btn-sort-default" onclick="sortByDefault()">得意先＋納期順</button>
-  <span style="width:1px;height:24px;background:#3a3a5a;display:inline-block;"></span>
-  <label style="font-size:12px;color:#333;display:flex;align-items:center;gap:6px;">
+  <span class="sep"></span>
+  <label style="font-size:12px;color:#444;display:flex;align-items:center;gap:5px;">
     工程１
-    <select id="proc1Select" onchange="applyFilters()" style="padding:5px 8px;border:1px solid #3a3a5a;border-radius:4px;font-size:12px;font-family:inherit;background:#0f0f1a;color:#d0d0e0;">
+    <select id="proc1Select" onchange="applyFilters()" style="padding:4px 8px;border:1px solid #aaa;border-radius:3px;font-size:12px;font-family:inherit;background:#fff;color:#0f1111;">
       {proc1_options}
     </select>
   </label>
-  <span style="width:1px;height:24px;background:#3a3a5a;display:inline-block;"></span>
-  <input class="search-box" type="text" id="searchBox" placeholder="得意先・製品名で絞込..." oninput="filterTable()">
+  <span class="sep"></span>
+  <input class="search-box" type="text" id="searchBox" placeholder="得意先・製品名で検索..." oninput="filterTable()">
   <span class="count-info" id="countInfo">表示中: {total} 件</span>
 </div>
 <div class="table-wrap">
@@ -384,13 +427,14 @@ td {{
   <th onclick="sortTable(0)">受注No</th>
   <th onclick="sortTable(1)">受注日</th>
   <th onclick="sortTable(2)">得意先</th>
-  <th onclick="sortTable(3)">製品名</th>
-  <th onclick="sortTable(4)">数量</th>
-  <th onclick="sortTable(5)">納期</th>
+  {tanto_th}
+  <th onclick="sortTable({col_product})">製品名</th>
+  <th onclick="sortTable({col_qty})">数量</th>
+  <th onclick="sortTable({col_delivery})">納期</th>
   <th>納期返事</th>
   <th>版区</th>
   <th>工程進捗</th>
-  <th onclick="sortTable(9)">最終納品日</th>
+  <th onclick="sortTable({col_kanryo})">最終納品日</th>
 </tr>
 </thead>
 <tbody id="tableBody">
@@ -399,6 +443,13 @@ td {{
 </table>
 </div>
 <script>
+// 担当列の有無に応じた列インデックス
+const HAS_TANTO   = {has_tanto_js};
+const TANTO_CSV   = {tanto_col_js};  // CSVの元列番号（-1=なし）
+const COL_DELIVERY = {col_delivery};
+const COL_CUSTOMER = 2;
+const COL_KANRYO   = {col_kanryo};
+
 let doneFilter = 'all'; // 'all' | 'hide_done' | 'only_done'
 let searchText = '';
 
@@ -478,12 +529,12 @@ function sortByDelivery() {{
   const rows = Array.from(tbody.querySelectorAll('tr'));
   const ths = document.querySelectorAll('thead th');
   ths.forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
-  ths[5].classList.add('sort-asc');
-  sortCol = 5;
+  if (ths[COL_DELIVERY]) ths[COL_DELIVERY].classList.add('sort-asc');
+  sortCol = COL_DELIVERY;
   sortAsc = true;
   rows.sort((a, b) => {{
-    const av = a.cells[5] ? a.cells[5].textContent.trim() : '';
-    const bv = b.cells[5] ? b.cells[5].textContent.trim() : '';
+    const av = a.cells[COL_DELIVERY] ? a.cells[COL_DELIVERY].textContent.trim() : '';
+    const bv = b.cells[COL_DELIVERY] ? b.cells[COL_DELIVERY].textContent.trim() : '';
     return av.localeCompare(bv, 'ja', {{numeric: true}});
   }});
   rows.forEach(r => tbody.appendChild(r));
@@ -497,10 +548,10 @@ function sortByDefault() {{
   ths.forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
   sortCol = -1;
   rows.sort((a, b) => {{
-    const ac = a.cells[2] ? a.cells[2].textContent.trim() : '';
-    const bc = b.cells[2] ? b.cells[2].textContent.trim() : '';
-    const ad = a.cells[5] ? a.cells[5].textContent.trim() : '';
-    const bd = b.cells[5] ? b.cells[5].textContent.trim() : '';
+    const ac = a.cells[COL_CUSTOMER] ? a.cells[COL_CUSTOMER].textContent.trim() : '';
+    const bc = b.cells[COL_CUSTOMER] ? b.cells[COL_CUSTOMER].textContent.trim() : '';
+    const ad = a.cells[COL_DELIVERY] ? a.cells[COL_DELIVERY].textContent.trim() : '';
+    const bd = b.cells[COL_DELIVERY] ? b.cells[COL_DELIVERY].textContent.trim() : '';
     return ac.localeCompare(bc, 'ja') || ad.localeCompare(bd, 'ja');
   }});
   rows.forEach(r => tbody.appendChild(r));
@@ -568,10 +619,13 @@ function fmtJuchuNo(s) {{
   if (s.includes('-')) {{
     const [pre, suf] = s.split('-');
     const n = parseInt(pre);
-    return isNaN(n) ? s : n + '-' + suf;
+    const main = isNaN(n) ? escHtml(pre) : n.toString();
+    return `<span class="no-main">${{main}}</span><span class="no-sub">${{escHtml(suf)}}</span>`;
   }}
-  return s;
+  return `<span class="no-main">${{escHtml(s)}}</span>`;
 }}
+
+let csvTantoCol = TANTO_CSV; // CSV読込時に更新
 
 function buildTr(row) {{
   const kanryo      = (row[54]||'').trim();
@@ -584,10 +638,15 @@ function buildTr(row) {{
   const proc1   = escHtml((row[14]||'').trim());
   const product2 = (row[5]||'').trim();
   const p2 = product2 ? `<br><small class="product2">${{escHtml(product2)}}</small>` : '';
+  const tantoVal = csvTantoCol >= 0 ? (row[csvTantoCol]||'').trim() : '';
+  const tantoTd = csvTantoCol >= 0
+    ? `<td class="td-tanto"><span class="tanto-badge">${{escHtml(tantoVal)}}</span></td>`
+    : '';
   return `<tr class="${{isDone?'done':''}}" data-done="${{isDone?1:0}}" data-proc1="${{proc1}}">
-  <td class="td-no">${{escHtml(fmtJuchuNo(row[0]))}}</td>
+  <td class="td-no">${{fmtJuchuNo(row[0])}}</td>
   <td class="td-date">${{escHtml((row[1]||'').trim())}}</td>
   <td class="td-customer">${{escHtml((row[2]||'').trim())}}</td>
+  ${{tantoTd}}
   <td class="td-product">${{escHtml((row[4]||'').trim())}}${{p2}}</td>
   <td class="td-qty">${{fmtAmount(row[6])}}<span class="unit">${{escHtml((row[7]||'').trim())}}</span></td>
   <td class="td-delivery">${{escHtml((row[10]||'').trim())}}</td>
@@ -598,7 +657,24 @@ function buildTr(row) {{
 </tr>`;
 }}
 
-function renderCSVData(dataRows) {{
+function renderCSVData(dataRows, headerRow) {{
+  // 担当列を検出（CSV読込時）
+  if (headerRow) {{
+    const idx = headerRow.findIndex(h => h.includes('担当'));
+    csvTantoCol = idx >= 0 ? idx : -1;
+    // テーブルヘッダーに担当列を追加/削除
+    const ths = document.querySelectorAll('thead th');
+    const hasTantoTh = Array.from(ths).some(th => th.textContent.trim() === '担当');
+    if (csvTantoCol >= 0 && !hasTantoTh) {{
+      const customerTh = ths[2];
+      const tantoTh = document.createElement('th');
+      tantoTh.textContent = '担当';
+      customerTh.parentNode.insertBefore(tantoTh, customerTh.nextSibling);
+    }} else if (csvTantoCol < 0 && hasTantoTh) {{
+      Array.from(ths).find(th => th.textContent.trim() === '担当').remove();
+    }}
+  }}
+
   // 得意先→納期順でソート
   dataRows.sort((a,b) => {{
     const ac=(a[2]||'').trim(), bc=(b[2]||'').trim();
@@ -616,7 +692,7 @@ function renderCSVData(dataRows) {{
   // ヘッダー統計更新
   const total = dataRows.length;
   const done  = dataRows.filter(r=>(r[54]||'').trim()).length;
-  document.querySelector('.stats').textContent = `全 ${{total}} 件 ／ 完了 ${{done}} 件 ／ 進行中 ${{total-done}} 件`;
+  document.querySelector('.stats').textContent = `全 ${{total}} 件　｜　完了 ${{done}} 件　｜　進行中 ${{total-done}} 件`;
 
   // フィルター・ソートをリセット
   doneFilter = 'all'; searchText = ''; sortCol = -1;
@@ -639,7 +715,7 @@ function onCsvSelected(event) {{
     const header = rows[0];
     const data   = rows.slice(1).filter(r => r.some(c=>c.trim()));
     document.querySelector('header span:last-child').textContent = file.name;
-    renderCSVData(data);
+    renderCSVData(data, header);
   }};
   reader.readAsArrayBuffer(file);
   event.target.value = ''; // 同じファイルを再選択できるようリセット
