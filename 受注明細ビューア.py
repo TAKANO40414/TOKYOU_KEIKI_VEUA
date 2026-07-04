@@ -164,12 +164,12 @@ def generate_html(csv_path):
 body {{
   font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif;
   font-size: 12px;
-  background: #f0f2f5;
-  color: #222;
+  background: #1a1a2e;
+  color: #d0d0e0;
 }}
 header {{
-  background: #1a3a5c;
-  color: #fff;
+  background: #0f0f1a;
+  color: #e0e0f0;
   padding: 12px 20px;
   display: flex;
   align-items: center;
@@ -177,21 +177,22 @@ header {{
   position: sticky;
   top: 0;
   z-index: 100;
-  box-shadow: 0 2px 6px rgba(0,0,0,.3);
+  box-shadow: 0 2px 8px rgba(0,0,0,.6);
+  border-bottom: 1px solid #2a2a4a;
 }}
 header h1 {{
   font-size: 16px;
   font-weight: bold;
   flex: 1;
 }}
-.stats {{ font-size: 12px; color: #acd; white-space: nowrap; }}
+.stats {{ font-size: 12px; color: #7a9bc0; white-space: nowrap; }}
 .controls {{
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 10px 20px;
-  background: #fff;
-  border-bottom: 1px solid #ddd;
+  background: #16213e;
+  border-bottom: 1px solid #2a2a4a;
   flex-wrap: wrap;
 }}
 .btn {{
@@ -203,29 +204,29 @@ header h1 {{
   font-family: inherit;
   transition: opacity .15s;
 }}
-.btn:hover {{ opacity: .85; }}
+.btn:hover {{ opacity: .8; }}
 .btn-hide {{
-  background: #e8534a;
+  background: #c0392b;
   color: #fff;
 }}
 .btn-show {{
-  background: #4a90d9;
+  background: #2980b9;
   color: #fff;
 }}
 .btn-all {{
-  background: #555;
-  color: #fff;
+  background: #444466;
+  color: #ccc;
 }}
 .btn-sort-delivery {{
-  background: #2e7d32;
+  background: #1e7e34;
   color: #fff;
 }}
 .btn-sort-default {{
-  background: #6a4c93;
+  background: #5a3e82;
   color: #fff;
 }}
 .btn-load {{
-  background: #e67e22;
+  background: #c0711a;
   color: #fff;
   font-weight: bold;
 }}
@@ -235,19 +236,21 @@ label.filter-label {{
   gap: 6px;
   font-size: 12px;
   cursor: pointer;
-  color: #333;
+  color: #aab;
 }}
 label.filter-label input {{ cursor: pointer; }}
 .search-box {{
   padding: 5px 10px;
-  border: 1px solid #ccc;
+  border: 1px solid #3a3a5a;
   border-radius: 4px;
   font-size: 12px;
   width: 200px;
+  background: #0f0f1a;
+  color: #d0d0e0;
 }}
 .count-info {{
   font-size: 12px;
-  color: #666;
+  color: #778;
   margin-left: auto;
 }}
 .table-wrap {{
@@ -257,14 +260,14 @@ label.filter-label input {{ cursor: pointer; }}
 table {{
   border-collapse: collapse;
   width: 100%;
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0,0,0,.1);
+  background: #16213e;
+  box-shadow: 0 2px 8px rgba(0,0,0,.4);
   border-radius: 4px;
   overflow: hidden;
 }}
 thead tr {{
-  background: #2c5282;
-  color: #fff;
+  background: #0f3460;
+  color: #c8d8f0;
   text-align: left;
   white-space: nowrap;
 }}
@@ -276,21 +279,21 @@ thead th {{
   cursor: pointer;
   user-select: none;
 }}
-thead th:hover {{ background: #2a4a72; }}
+thead th:hover {{ background: #0a2a50; }}
 thead th.sort-asc::after {{ content: " ▲"; font-size: 9px; }}
 thead th.sort-desc::after {{ content: " ▼"; font-size: 9px; }}
 tbody tr {{
-  border-bottom: 1px solid #e8eaf0;
+  border-bottom: 1px solid #2a2a4a;
   transition: background .1s;
 }}
-tbody tr:hover {{ background: #f0f4ff !important; }}
+tbody tr:hover {{ background: #1e2d50 !important; }}
 tbody tr.done {{
-  background: #e8f5e9;
-  color: #558;
+  background: #1a2a1a;
+  color: #7a9a7a;
 }}
-tbody tr.done td {{ color: #667; }}
+tbody tr.done td {{ color: #6a8a6a; }}
 tbody tr.done .td-kanryo {{
-  color: #2e7d32;
+  color: #4caf50;
   font-weight: bold;
 }}
 td {{
@@ -298,15 +301,15 @@ td {{
   vertical-align: top;
   font-size: 11.5px;
 }}
-.td-no {{ white-space: nowrap; font-family: monospace; font-size: 11px; color: #555; }}
+.td-no {{ white-space: nowrap; font-family: monospace; font-size: 11px; color: #778; }}
 .td-date {{ white-space: nowrap; }}
-.td-customer {{ font-weight: 600; white-space: nowrap; min-width: 120px; }}
+.td-customer {{ font-weight: 600; white-space: nowrap; min-width: 120px; color: #b0c4de; }}
 .td-product {{ min-width: 160px; max-width: 240px; }}
-.product2 {{ color: #888; font-size: 10px; }}
+.product2 {{ color: #667; font-size: 10px; }}
 .td-qty {{ white-space: nowrap; text-align: right; }}
-.unit {{ color: #888; margin-left: 2px; }}
+.unit {{ color: #667; margin-left: 2px; }}
 .td-amount {{ white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }}
-.td-delivery {{ white-space: nowrap; font-weight: 600; color: #c0392b; }}
+.td-delivery {{ white-space: nowrap; font-weight: 600; color: #e57373; }}
 .td-reply {{ white-space: nowrap; }}
 .td-version {{ white-space: nowrap; }}
 .td-process {{ min-width: 200px; max-width: 380px; }}
@@ -321,28 +324,28 @@ td {{
   white-space: nowrap;
 }}
 .proc-done {{
-  background: #ffcdd2;
-  color: #b71c1c;
-  border: 1px solid #000;
+  background: #4a1010;
+  color: #ff8a80;
+  border: 1px solid #888;
   font-weight: 600;
 }}
 .proc-shin {{
-  background: #fff9c4;
-  color: #f57f17;
-  border: 1px solid #000;
+  background: #3a2e00;
+  color: #ffd54f;
+  border: 1px solid #888;
 }}
 .proc-mi {{
-  background: #eceff1;
-  color: #546e7a;
-  border: 1px solid #000;
+  background: #1e2a38;
+  color: #7a9ab0;
+  border: 1px solid #556;
 }}
 .proc-date {{
   display: block;
   font-size: 9px;
-  color: #555;
+  color: #aaa;
   margin-top: 1px;
 }}
-.no-proc {{ color: #bbb; }}
+.no-proc {{ color: #445; }}
 </style>
 </head>
 <body>
@@ -356,21 +359,21 @@ td {{
     📂 CSVを読み込む
     <input type="file" id="csvFileInput" accept=".csv" onchange="onCsvSelected(event)" style="display:none;">
   </label>
-  <span style="width:1px;height:24px;background:#ddd;display:inline-block;"></span>
+  <span style="width:1px;height:24px;background:#3a3a5a;display:inline-block;"></span>
   <button class="btn btn-hide" onclick="hideDone()">完了済みを非表示</button>
   <button class="btn btn-show" onclick="showDone()">完了済みを表示</button>
   <button class="btn btn-all" onclick="showAll()">すべて表示</button>
-  <span style="width:1px;height:24px;background:#ddd;display:inline-block;"></span>
+  <span style="width:1px;height:24px;background:#3a3a5a;display:inline-block;"></span>
   <button class="btn btn-sort-delivery" onclick="sortByDelivery()">納期順 ▲</button>
   <button class="btn btn-sort-default" onclick="sortByDefault()">得意先＋納期順</button>
-  <span style="width:1px;height:24px;background:#ddd;display:inline-block;"></span>
+  <span style="width:1px;height:24px;background:#3a3a5a;display:inline-block;"></span>
   <label style="font-size:12px;color:#333;display:flex;align-items:center;gap:6px;">
     工程１
-    <select id="proc1Select" onchange="applyFilters()" style="padding:5px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px;font-family:inherit;">
+    <select id="proc1Select" onchange="applyFilters()" style="padding:5px 8px;border:1px solid #3a3a5a;border-radius:4px;font-size:12px;font-family:inherit;background:#0f0f1a;color:#d0d0e0;">
       {proc1_options}
     </select>
   </label>
-  <span style="width:1px;height:24px;background:#ddd;display:inline-block;"></span>
+  <span style="width:1px;height:24px;background:#3a3a5a;display:inline-block;"></span>
   <input class="search-box" type="text" id="searchBox" placeholder="得意先・製品名で絞込..." oninput="filterTable()">
   <span class="count-info" id="countInfo">表示中: {total} 件</span>
 </div>
