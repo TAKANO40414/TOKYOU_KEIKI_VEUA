@@ -4,7 +4,7 @@
 
 import csv, random, os
 
-SRC  = "/Users/takanoakihito/Desktop/受注明細一覧_20260620.csv"
+SRC  = os.path.expanduser("~/Desktop/受注明細一覧_20260620.csv")
 DST  = os.path.join(os.path.dirname(__file__), "サンプルデータ.csv")
 
 random.seed(42)

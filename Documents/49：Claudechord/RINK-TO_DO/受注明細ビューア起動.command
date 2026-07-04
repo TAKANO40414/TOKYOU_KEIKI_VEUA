@@ -1,2 +1,2 @@
 #!/bin/bash
-python3 "/Users/takanoakihito/Documents/49：Claudechord/RINK-TO_DO/受注明細ビューア.py"
+python3 "$(dirname "$0")/受注明細ビューア.py"

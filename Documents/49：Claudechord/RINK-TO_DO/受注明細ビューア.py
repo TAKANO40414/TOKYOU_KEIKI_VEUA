@@ -11,7 +11,7 @@ import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-CSV_PATH = "/Users/takanoakihito/Desktop/受注明細一覧_20260620.csv"
+CSV_PATH = os.path.expanduser("~/Desktop/受注明細一覧_20260620.csv")
 
 KANRYO_COL = 54  # 最終納品日
 
