@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PC5 ビューア - デモ版</title>
+<style>
+  :root {
+    --bg: #f0f2f5; --panel: #ffffff; --accent: #1565c0; --accent2: #e3f2fd;
+    --border: #dde3ea; --text: #1a1a2e; --muted: #6b7280;
+    --row-even: #f8faff; --row-odd: #ffffff; --selected: #bbdefb;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Helvetica Neue", Arial, "Hiragino Sans", sans-serif;
+         background: var(--bg); color: var(--text); font-size: 14px; }
+
+  /* ヘッダー */
+  header {
+    background: var(--accent); color: #fff;
+    padding: 10px 20px; display: flex; align-items: center; gap: 14px;
+    box-shadow: 0 2px 6px rgba(0,0,0,.25);
+  }
+  header h1 { font-size: 18px; font-weight: 600; letter-spacing: .5px; }
+  .demo-badge {
+    background: #ff9800; color: #fff; font-size: 11px; font-weight: 700;
+    padding: 2px 8px; border-radius: 10px; letter-spacing: 1px;
+  }
+  header .folder-bar { display: flex; gap: 8px; flex: 1; align-items: center; }
+  header input[type=text] {
+    flex: 1; padding: 5px 10px; border-radius: 6px; border: none;
+    font-size: 13px; background: rgba(255,255,255,.15); color: #fff;
+  }
+  header input[type=text]::placeholder { color: rgba(255,255,255,.6); }
+  header button {
+    padding: 6px 14px; border-radius: 6px; border: none; cursor: pointer;
+    font-size: 13px; font-weight: 600; background: #fff; color: var(--accent);
+  }
+  header button:hover { background: #e3f2fd; }
+
+  /* レイアウト */
+  .layout { display: flex; height: calc(100vh - 50px); }
+
+  /* 左パネル */
+  .sidebar {
+    width: 300px; min-width: 220px; background: var(--panel);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column;
+    resize: horizontal; overflow: auto;
+  }
+  .sidebar-title {
+    padding: 10px 14px; font-weight: 700; font-size: 13px;
+    border-bottom: 1px solid var(--border); background: #fafbfc;
+    color: var(--muted); display: flex; align-items: center; justify-content: space-between;
+  }
+  .sidebar-search { padding: 8px 10px; border-bottom: 1px solid var(--border); background: #fff; }
+  .sidebar-search input {
+    width: 100%; padding: 5px 9px; border-radius: 6px;
+    border: 1px solid var(--border); font-size: 12px; outline: none;
+  }
+  .sidebar-search input:focus { border-color: var(--accent); }
+  .file-list { flex: 1; overflow-y: auto; }
+  .date-group { border-bottom: 2px solid var(--border); }
+  .date-header {
+    padding: 9px 14px; cursor: pointer; background: #1565c0;
+    display: flex; align-items: center; gap: 8px;
+    font-weight: 700; font-size: 13px; color: #fff;
+    position: sticky; top: 0; z-index: 2; user-select: none;
+  }
+  .date-header:hover { background: #1976d2; }
+  .date-header .arrow { font-size: 10px; transition: transform .2s; }
+  .date-header.collapsed .arrow { transform: rotate(-90deg); }
+  .date-header .d-count { margin-left: auto; font-size: 11px; font-weight: 400; opacity: .8; }
+  .date-files.collapsed { display: none; }
+  .file-item {
+    padding: 8px 14px 8px 20px; cursor: pointer; border-bottom: 1px solid var(--border);
+    transition: background .12s;
+  }
+  .file-item:hover { background: var(--accent2); }
+  .file-item.active { background: var(--selected); border-left: 3px solid var(--accent); padding-left: 17px; }
+  .file-item .fi-seq { font-weight: 700; font-size: 13px; color: #333; }
+  .defect-badge {
+    font-size: 11px; font-weight: 700; background: #e74c3c; color: #fff;
+    padding: 1px 6px; border-radius: 8px; white-space: nowrap;
+  }
+  .file-item .fi-product { font-size: 12px; color: var(--accent); margin-top: 1px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 230px; }
+  .file-item .fi-sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .file-count { padding: 8px 14px; font-size: 12px; color: var(--muted);
+                border-top: 1px solid var(--border); background: #fafbfc; }
+
+  /* 右パネル */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .tabs {
+    display: flex; background: #fafbfc; border-bottom: 2px solid var(--border);
+    overflow-x: auto; flex-shrink: 0;
+  }
+  .tab-btn {
+    padding: 10px 18px; cursor: pointer; font-size: 13px; font-weight: 600;
+    border: none; background: none; color: var(--muted); white-space: nowrap;
+    border-bottom: 2px solid transparent; margin-bottom: -2px; transition: color .15s;
+  }
+  .tab-btn:hover { color: var(--accent); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-content { flex: 1; overflow: hidden; }
+  .tab-pane { display: none; height: 100%; overflow: auto; }
+  .tab-pane.active { display: block; }
+
+  /* 概要 */
+  .summary { padding: 20px; max-width: 900px; }
+  .summary-section { margin-bottom: 24px; }
+  .summary-section h2 {
+    font-size: 15px; font-weight: 700; color: var(--accent);
+    border-bottom: 2px solid var(--accent2); padding-bottom: 6px; margin-bottom: 12px;
+  }
+  .summary-grid { display: grid; grid-template-columns: 180px 1fr; gap: 6px 12px; }
+  .summary-grid .k { font-weight: 600; color: var(--muted); font-size: 13px; }
+  .summary-grid .v { font-size: 13px; }
+
+  /* テーブル */
+  .table-wrap { height: 100%; overflow: auto; }
+  table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: 13px; }
+  th {
+    position: sticky; top: 0; background: var(--accent); color: #fff;
+    padding: 8px 12px; text-align: left; font-weight: 600; white-space: nowrap;
+    border-right: 1px solid rgba(255,255,255,.2); z-index: 1;
+  }
+  td { padding: 7px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tr:nth-child(even) td { background: var(--row-even); }
+  tr:nth-child(odd)  td { background: var(--row-odd); }
+  tr:hover td { background: var(--accent2); }
+
+  /* 欠陥カード */
+  .defect-list { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .defect-card {
+    background: #fff; border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.06);
+  }
+  .defect-card-header {
+    padding: 8px 14px; background: #f0f4ff;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+  }
+  .defect-card-header .d-seq { font-weight: 800; font-size: 15px; color: var(--accent); }
+  .defect-card-header .d-kind {
+    font-weight: 700; font-size: 13px; color: #c0392b;
+    background: #fdecea; padding: 2px 8px; border-radius: 4px;
+  }
+  .defect-card-header .d-judge { font-size: 12px; color: var(--muted); }
+  .defect-card-header .d-meter {
+    margin-left: auto; font-size: 14px; font-weight: 700;
+    color: #1a6b3c; background: #e6f4ec; padding: 2px 10px; border-radius: 12px;
+  }
+  .pos-bar-wrap {
+    margin: 8px 16px 4px; padding: 8px 12px;
+    background: #f7f9ff; border: 1px solid var(--border); border-radius: 6px;
+  }
+  .pos-bar-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  .pos-bar { position: relative; height: 20px; background: #dde3f0; border-radius: 4px; overflow: visible; }
+  .pos-bar-start, .pos-bar-end { position: absolute; top: 22px; font-size: 10px; color: var(--muted); }
+  .pos-bar-start { left: 0; } .pos-bar-end { right: 0; }
+  .pos-dot {
+    position: absolute; top: 50%; transform: translate(-50%, -50%);
+    width: 10px; height: 10px; background: #e74c3c; border-radius: 50%;
+    border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  }
+  .defect-card-body { display: flex; gap: 0; }
+  .defect-imgs { background: #111; padding: 10px 12px 6px; border-bottom: 1px solid #333; }
+  .defect-img-main { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 6px; }
+  .defect-img-block { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; }
+  .defect-img-block .img-label {
+    font-size: 11px; font-weight: 700; color: #ccc; letter-spacing: .5px;
+    background: #2a2a2a; padding: 1px 8px; border-radius: 3px;
+  }
+  .defect-img-block .img-wrap {
+    width: 100%; overflow: hidden; background: #1a1a1a;
+    border-radius: 4px; border: 1px solid #333;
+  }
+  .defect-img-block .img-wrap img { width: 100%; height: auto; display: block; }
+  .defect-img-block .no-img-wrap {
+    height: 120px; display: flex; align-items: center;
+    justify-content: center; color: #444; font-size: 12px;
+  }
+  .defect-meta {
+    padding: 10px 14px; font-size: 12px; display: grid;
+    grid-template-columns: 120px 1fr; gap: 3px 8px; align-content: start;
+  }
+  .defect-meta .mk { color: var(--muted); font-weight: 600; }
+  .defect-meta .mv { color: var(--text); }
+
+  /* 画像パネル */
+  .image-panel { padding: 16px; height: 100%; display: flex; flex-direction: column; gap: 12px; }
+  .image-select { display: flex; gap: 10px; align-items: center; }
+  .image-select select { flex: 1; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border); font-size: 13px; }
+  .image-frame {
+    flex: 1; background: #1e1e1e; border-radius: 8px; overflow: auto;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .image-frame img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+  .placeholder {
+    height: 100%; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 15px; flex-direction: column; gap: 10px;
+  }
+  .placeholder .icon { font-size: 48px; }
+  .statusbar {
+    padding: 5px 14px; font-size: 12px; color: var(--muted);
+    border-top: 1px solid var(--border); background: #fafbfc; flex-shrink: 0;
+  }
+  .demo-notice {
+    background: #fff3cd; border: 1px solid #ffc107; color: #856404;
+    padding: 6px 14px; font-size: 12px; text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🔍 PC5 ビューア</h1>
+  <span class="demo-badge">DEMO</span>
+  <div class="folder-bar">
+    <input type="text" id="folderInput" value="/TOKYO_KEIKI/4号機/検品データ" readonly>
+    <button onclick="loadFolder()">▶ 開く</button>
+  </div>
+</header>
+
+<div class="demo-notice">
+  ⚠️ これはデモ版です。ダミーデータを表示しています。実際のPC5ファイルを読むにはローカル版をご利用ください。
+</div>
+
+<div class="layout">
+  <!-- 左: ファイルリスト -->
+  <div class="sidebar">
+    <div class="sidebar-title">
+      <span>PC5 ファイル一覧</span>
+    </div>
+    <div class="sidebar-search">
+      <input type="text" id="searchInput" placeholder="🔍 製品名・注文NOで絞り込み..." oninput="filterList()">
+    </div>
+    <div class="file-list" id="fileList">
+      <div class="placeholder"><span class="icon">📂</span>読み込み中...</div>
+    </div>
+    <div class="file-count" id="fileCount"></div>
+  </div>
+
+  <!-- 右: 詳細 -->
+  <div class="main">
+    <div class="tabs" id="tabBar" style="display:none">
+      <button class="tab-btn active" onclick="showTab('summary',event)">概要</button>
+      <button class="tab-btn" onclick="showTab('log',event)">ログ</button>
+      <button class="tab-btn" onclick="showTab('chapter',event)">チャプター</button>
+      <button class="tab-btn" onclick="showTab('event',event)">イベント</button>
+      <button class="tab-btn" onclick="showTab('defect',event)">欠陥</button>
+      <button class="tab-btn" onclick="showTab('result',event)">結果</button>
+      <button class="tab-btn" onclick="showTab('machine',event)">機械</button>
+      <button class="tab-btn" onclick="showTab('env',event)">環境</button>
+      <button class="tab-btn" onclick="showTab('image',event)">画像</button>
+    </div>
+    <div class="tab-content">
+      <div class="tab-pane active" id="pane-summary">
+        <div class="placeholder"><span class="icon">📋</span>ファイルを選択してください</div>
+      </div>
+      <div class="tab-pane" id="pane-log"></div>
+      <div class="tab-pane" id="pane-chapter"></div>
+      <div class="tab-pane" id="pane-event"></div>
+      <div class="tab-pane" id="pane-defect"></div>
+      <div class="tab-pane" id="pane-result"></div>
+      <div class="tab-pane" id="pane-machine"></div>
+      <div class="tab-pane" id="pane-env"></div>
+      <div class="tab-pane" id="pane-image">
+        <div class="image-panel">
+          <div class="image-select">
+            <label>画像ファイル:</label>
+            <select id="imgSelect" onchange="showImage()"><option>─</option></select>
+          </div>
+          <div class="image-frame"><img id="imgEl" src="" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+    <div class="statusbar" id="statusBar">ファイルを選択してください</div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// ダミーデータ定義
+// ============================================================
+const DUMMY_FILES = [
+  {
+    filename: "0000325194-#1@2026Jun09-08h05m12.pc5",
+    subfolder: "2026Jun09", folder_label: "2026年6月9日",
+    folder_sort_key: "20260609",
+    product_name: "高光沢フィルム A", lot_no: "0000325194",
+    part_no: "HGA-2024-001", customer: "東京株式会社",
+    defect_count: 3, seq: 1, date: "2026Jun09", time: "08:05:12",
+  },
+  {
+    filename: "0000325194-#2@2026Jun09-09h22m44.pc5",
+    subfolder: "2026Jun09", folder_label: "2026年6月9日",
+    folder_sort_key: "20260609",
+    product_name: "高光沢フィルム A", lot_no: "0000325194",
+    part_no: "HGA-2024-001", customer: "東京株式会社",
+    defect_count: 0, seq: 2, date: "2026Jun09", time: "09:22:44",
+  },
+  {
+    filename: "0000325211-#1@2026Jun09-13h47m31.pc5",
+    subfolder: "2026Jun09", folder_label: "2026年6月9日",
+    folder_sort_key: "20260609",
+    product_name: "マット合成紙 B", lot_no: "0000325211",
+    part_no: "MSB-2024-005", customer: "大阪工業",
+    defect_count: 7, seq: 1, date: "2026Jun09", time: "13:47:31",
+  },
+  {
+    filename: "0000325230-#1@2026Jun10-08h15m00.pc5",
+    subfolder: "2026Jun10", folder_label: "2026年6月10日",
+    folder_sort_key: "20260610",
+    product_name: "透明PETフィルム", lot_no: "0000325230",
+    part_no: "PET-2024-012", customer: "名古屋精機",
+    defect_count: 1, seq: 1, date: "2026Jun10", time: "08:15:00",
+  },
+  {
+    filename: "0000325230-#2@2026Jun10-10h30m22.pc5",
+    subfolder: "2026Jun10", folder_label: "2026年6月10日",
+    folder_sort_key: "20260610",
+    product_name: "透明PETフィルム", lot_no: "0000325230",
+    part_no: "PET-2024-012", customer: "名古屋精機",
+    defect_count: 0, seq: 2, date: "2026Jun10", time: "10:30:22",
+  },
+  {
+    filename: "0000325245-#1@2026Jun11-09h05m50.pc5",
+    subfolder: "2026Jun11", folder_label: "2026年6月11日",
+    folder_sort_key: "20260611",
+    product_name: "白色遮光フィルム C", lot_no: "0000325245",
+    part_no: "WSF-2024-003", customer: "福岡電子",
+    defect_count: 12, seq: 1, date: "2026Jun11", time: "09:05:50",
+  },
+];
+
+// ダミーファイル詳細データ生成
+function makeDummyFileData(f) {
+  const beginTime = `2026-06-${f.date.slice(-2)}T${f.time}`;
+  const endTime   = `2026-06-${f.date.slice(-2)}T${(parseInt(f.time)+1).toString().padStart(2,'0')}${f.time.slice(2)}`;
+  const lengthM   = 800 + Math.floor(Math.random()*400);
+  const defects   = [];
+  const kinds     = ["かすれ", "汚れ", "異物", "キズ", "気泡", "折れ"];
+  for (let i = 1; i <= f.defect_count; i++) {
+    defects.push({
+      DefectId: String(i),
+      EventId:  String(i).padStart(4,"0"),
+      Kind:     kinds[i % kinds.length],
+      Judge:    i % 3 === 0 ? "NG" : "OK",
+      Camera:   "CH" + ((i % 4) + 1),
+      LotPositionY: String(Math.floor(lengthM * i / (f.defect_count + 1) / 0.00245)),
+      CircumscriptionWidth:  String(20 + Math.floor(Math.random()*80)),
+      CircumscriptionHeight: String(15 + Math.floor(Math.random()*60)),
+      DefectCount: String(100 + Math.floor(Math.random()*900)),
+      BrightCount: String(50  + Math.floor(Math.random()*400)),
+      DarkCount:   String(50  + Math.floor(Math.random()*400)),
+      PrincipalFlag: "true",
+    });
+  }
+
+  return {
+    tables: {
+      LogTable: {
+        headers: ["IdInfo_0","IdInfo_1","IdInfo_2","IdInfo_3","IdInfo_4","IdInfo_5","IdInfo_6","IdInfo_7"],
+        rows: [{
+          IdInfo_0: f.lot_no, IdInfo_1: f.product_name, IdInfo_2: "4号機",
+          IdInfo_3: f.part_no, IdInfo_4: "なし", IdInfo_5: "表面",
+          IdInfo_6: f.customer, IdInfo_7: String(lengthM),
+        }],
+      },
+      ChapterTable: {
+        headers: ["BeginTime","EndTime","Length","EndPosition","DefectsR0","DefectsR1"],
+        rows: [{
+          BeginTime: beginTime, EndTime: endTime,
+          Length: String(lengthM),
+          EndPosition: String(Math.floor(lengthM / 0.00245)),
+          DefectsR0: String(f.defect_count), DefectsR1: "0",
+        }],
+      },
+      EventTable: {
+        headers: ["EventId","EventKind","LotPositionY","Message"],
+        rows: [
+          { EventId: "E001", EventKind: "開始", LotPositionY: "0", Message: "検品開始" },
+          { EventId: "E002", EventKind: "速度変更", LotPositionY: String(Math.floor(lengthM*0.3/0.00245)), Message: "速度: 80m/min → 100m/min" },
+          { EventId: "E003", EventKind: "終了", LotPositionY: String(Math.floor(lengthM/0.00245)), Message: "検品終了" },
+        ],
+      },
+      DefectTable: { headers: Object.keys(defects[0] || {defectId:""}), rows: defects },
+      ResultTable: {
+        headers: ["ResultName","ResultValue","Unit"],
+        rows: [
+          { ResultName: "総欠陥数", ResultValue: String(f.defect_count), Unit: "件" },
+          { ResultName: "検品長", ResultValue: String(lengthM), Unit: "m" },
+          { ResultName: "検品速度", ResultValue: "100", Unit: "m/min" },
+          { ResultName: "判定", ResultValue: f.defect_count > 5 ? "NG" : "OK", Unit: "" },
+        ],
+      },
+      MachineTable: {
+        headers: ["MachineID","MachineName","UserName","SystemName0","SystemName1"],
+        rows: [{ MachineID: "PC5-004", MachineName: "4号機", UserName: "オペレーター1",
+                 SystemName0: "PC5 Vision v3.0", SystemName1: "ライン4" }],
+      },
+      EnvironmentTable: {
+        headers: ["Title","LutGain","SpeedWarningLevel"],
+        rows: [{ Title: "標準設定2024", LutGain: "1.20", SpeedWarningLevel: "120" }],
+      },
+    },
+    defect_image_keys: Object.fromEntries(defects.map(d => [d.DefectId, ["D","R"]])),
+    pos_scale: 0.00245,
+    length_m: lengthM,
+  };
+}
+
+// プレースホルダー画像（グレーのダミー画像）をCanvas生成
+function makePlaceholderImage(w, h, label, color="#444") {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d");
+  // 背景
+  ctx.fillStyle = "#1a1a1a";
+  ctx.fillRect(0, 0, w, h);
+  // ノイズ風テクスチャ
+  ctx.fillStyle = "#222";
+  for (let y = 0; y < h; y += 4)
+    for (let x = 0; x < w; x += 4)
+      if (Math.random() > 0.5) ctx.fillRect(x, y, 2, 2);
+  // 枠
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(4, 4, w-8, h-8);
+  // ラベル
+  ctx.fillStyle = color;
+  ctx.font = `bold ${Math.floor(h/8)}px Arial`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, w/2, h/2);
+  return c.toDataURL("image/png").split(",")[1];
+}
+
+// ============================================================
+// UI 処理
+// ============================================================
+let allFiles = [];
+let currentFileKey = null;
+
+function loadFolder() {
+  allFiles = DUMMY_FILES;
+  renderFileList(allFiles);
+}
+
+function filterList() {
+  const q = document.getElementById("searchInput").value.toLowerCase();
+  const filtered = q
+    ? allFiles.filter(f =>
+        f.product_name.toLowerCase().includes(q) ||
+        f.lot_no.toLowerCase().includes(q) ||
+        f.part_no.toLowerCase().includes(q) ||
+        f.customer.toLowerCase().includes(q))
+    : allFiles;
+  renderFileList(filtered);
+}
+
+function renderFileList(files) {
+  const el = document.getElementById("fileList");
+  if (!files.length) {
+    el.innerHTML = '<div class="placeholder"><span class="icon">📭</span>該当ファイルなし</div>';
+    document.getElementById("fileCount").textContent = "";
+    return;
+  }
+
+  // 日付グループに分類
+  const groups = {};
+  for (const f of files) {
+    const key = f.folder_sort_key;
+    if (!groups[key]) groups[key] = { label: f.folder_label, files: [] };
+    groups[key].files.push(f);
+  }
+
+  const sortedKeys = Object.keys(groups).sort((a,b) => b.localeCompare(a));
+  let html = "";
+  for (const key of sortedKeys) {
+    const g = groups[key];
+    html += `<div class="date-group">
+      <div class="date-header" onclick="toggleGroup(this)">
+        <span class="arrow">▼</span>
+        <span>${escHtml(g.label)}</span>
+        <span class="d-count">${g.files.length}件</span>
+      </div>
+      <div class="date-files">`;
+    for (const f of g.files) {
+      const fkey = f.subfolder + "/" + f.filename;
+      const badge = f.defect_count > 0
+        ? `<span class="defect-badge">欠陥 ${f.defect_count}</span>` : "";
+      html += `<div class="file-item${currentFileKey===fkey?' active':''}"
+                    onclick="selectFile(${escAttr(JSON.stringify(f))})">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span class="fi-seq">#${f.seq}</span>
+          ${badge}
+        </div>
+        <div class="fi-product">${escHtml(f.product_name)}</div>
+        <div class="fi-sub">${escHtml(f.lot_no)} / ${escHtml(f.time)}</div>
+      </div>`;
+    }
+    html += `</div></div>`;
+  }
+
+  el.innerHTML = html;
+  document.getElementById("fileCount").textContent = `${files.length} 件`;
+}
+
+function toggleGroup(header) {
+  header.classList.toggle("collapsed");
+  header.nextElementSibling.classList.toggle("collapsed");
+}
+
+function selectFile(f) {
+  currentFileKey = f.subfolder + "/" + f.filename;
+  // アクティブ状態を更新
+  document.querySelectorAll(".file-item").forEach(el => el.classList.remove("active"));
+  event.currentTarget.classList.add("active");
+
+  document.getElementById("tabBar").style.display = "flex";
+  document.getElementById("statusBar").textContent = "表示中: " + f.filename;
+
+  const data = makeDummyFileData(f);
+
+  renderSummary(data);
+  renderTable("log",     data.tables.LogTable);
+  renderTable("chapter", data.tables.ChapterTable);
+  renderTable("event",   data.tables.EventTable);
+  renderDefects(data.tables.DefectTable, data.pos_scale, data.length_m);
+  renderTable("result",  data.tables.ResultTable);
+  renderTable("machine", data.tables.MachineTable);
+  renderTable("env",     data.tables.EnvironmentTable);
+  renderImages(f);
+
+  // タブを概要に戻す
+  showTab("summary", {currentTarget: document.querySelector(".tab-btn")});
+}
+
+function renderSummary(data) {
+  const l = (data.tables.LogTable?.rows || [])[0] || {};
+  const c = (data.tables.ChapterTable?.rows || [])[0] || {};
+  const m = (data.tables.MachineTable?.rows || [])[0] || {};
+  const e = (data.tables.EnvironmentTable?.rows || [])[0] || {};
+
+  const section = (title, pairs) => {
+    const rows = pairs.filter(([,v]) => v).map(([k,v]) =>
+      `<div class="k">${k}</div><div class="v">${escHtml(v)}</div>`).join("");
+    return rows ? `<div class="summary-section">
+      <h2>${title}</h2>
+      <div class="summary-grid">${rows}</div>
+    </div>` : "";
+  };
+
+  const fmtTime = s => {
+    if (!s) return "";
+    try { return new Date(s).toLocaleString("ja-JP"); } catch { return s; }
+  };
+
+  document.getElementById("pane-summary").innerHTML = `<div class="summary">
+    ${section("■ 機械情報", [
+      ["機械ID", m.MachineID], ["機械名", m.MachineName],
+      ["ユーザー名", m.UserName],
+      ["システム0", m.SystemName0], ["システム1", m.SystemName1],
+    ])}
+    ${section("■ ジョブ情報", [
+      ["ロット番号", l.IdInfo_0], ["製品名", l.IdInfo_1],
+      ["号機", l.IdInfo_2], ["品番", l.IdInfo_3],
+      ["FOR", l.IdInfo_4], ["刷り面", l.IdInfo_5],
+      ["得意先", l.IdInfo_6], ["枚数", l.IdInfo_7],
+    ])}
+    ${section("■ 検品情報", [
+      ["開始時刻", fmtTime(c.BeginTime)], ["終了時刻", fmtTime(c.EndTime)],
+      ["長さ (m)", c.Length],
+      ["欠陥数 R0", c.DefectsR0], ["欠陥数 R1", c.DefectsR1],
+    ])}
+    ${section("■ 環境設定", [
+      ["タイトル", e.Title], ["LUTゲイン", e.LutGain],
+      ["速度警告レベル", e.SpeedWarningLevel],
+    ])}
+  </div>`;
+}
+
+function renderTable(pane, tableData) {
+  const el = document.getElementById("pane-" + pane);
+  if (!tableData || !tableData.rows.length) {
+    el.innerHTML = '<div class="placeholder">データなし</div>';
+    return;
+  }
+  const ths = tableData.headers.map(h => `<th>${escHtml(h)}</th>`).join("");
+  const trs = tableData.rows.map(r =>
+    "<tr>" + tableData.headers.map(h => `<td>${escHtml(r[h] || "")}</td>`).join("") + "</tr>"
+  ).join("");
+  el.innerHTML = `<div class="table-wrap"><table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`;
+}
+
+function renderDefects(tableData, posScale, lengthM) {
+  const el = document.getElementById("pane-defect");
+  if (!tableData || !tableData.rows.length) {
+    el.innerHTML = '<div class="placeholder">欠陥データなし</div>';
+    return;
+  }
+
+  function toMeter(lotPosY) {
+    if (!posScale || !lotPosY) return null;
+    const m = parseFloat(lotPosY) * posScale;
+    if (lengthM > 0 && m > lengthM * 1.1) return null;
+    if (m < 0) return null;
+    return m.toFixed(2);
+  }
+
+  const rows = tableData.rows;
+
+  // 位置バー
+  let posBar = "";
+  if (posScale && lengthM > 0) {
+    const dots = rows.map(r => {
+      const m = toMeter(r.LotPositionY);
+      if (!m) return "";
+      const pct = (parseFloat(m) / lengthM * 100).toFixed(1);
+      return `<div class="pos-dot" style="left:${pct}%" title="${m} m (${r.Kind||''})"></div>`;
+    }).join("");
+    posBar = `<div class="pos-bar-wrap">
+      <div class="pos-bar-label">ロール全長: ${lengthM.toFixed(1)} m</div>
+      <div class="pos-bar">${dots}
+        <div class="pos-bar-start">0 m</div>
+        <div class="pos-bar-end">${lengthM.toFixed(1)} m</div>
+      </div>
+    </div>`;
+  }
+
+  const cards = rows.map((r, i) => {
+    const meter = toMeter(r.LotPositionY);
+    // ダミー画像をCanvas生成
+    const dImg = makePlaceholderImage(320, 240, `欠点 #${r.DefectId}`, "#ff6060");
+    const rImg = makePlaceholderImage(320, 240, `参照 #${r.DefectId}`, "#60a0ff");
+
+    const metaItems = [
+      ["欠陥ID", r.DefectId], ["種別", r.Kind], ["判定", r.Judge],
+      ["カメラ", r.Camera],
+      ["サイズ W×H", r.CircumscriptionWidth ? `${r.CircumscriptionWidth} × ${r.CircumscriptionHeight} px` : ""],
+      ["欠陥画素数", r.DefectCount],
+    ].filter(([,v]) => v);
+
+    const metaHtml = metaItems.map(([k,v]) =>
+      `<div class="mk">${k}</div><div class="mv">${escHtml(String(v))}</div>`).join("");
+
+    return `<div class="defect-card">
+      <div class="defect-card-header">
+        <span class="d-seq">#${r.DefectId}</span>
+        ${r.Kind ? `<span class="d-kind">${escHtml(r.Kind)}</span>` : ""}
+        ${r.Judge ? `<span class="d-judge">判定: ${escHtml(r.Judge)}</span>` : ""}
+        ${meter !== null ? `<span class="d-meter">📍 ${meter} m</span>` : ""}
+      </div>
+      <div class="defect-card-body">
+        <div class="defect-imgs">
+          <div class="defect-img-main">
+            <div class="defect-img-block">
+              <div class="img-label">欠点 (D)</div>
+              <div class="img-wrap"><img src="data:image/png;base64,${dImg}"></div>
+            </div>
+            <div class="defect-img-block">
+              <div class="img-label">参照 (R)</div>
+              <div class="img-wrap"><img src="data:image/png;base64,${rImg}"></div>
+            </div>
+          </div>
+        </div>
+        <div class="defect-meta">${metaHtml}</div>
+      </div>
+    </div>`;
+  });
+
+  el.innerHTML = `<div style="padding:6px 16px 2px;font-size:12px;color:var(--muted);">全 ${rows.length} 件</div>`
+    + posBar
+    + `<div class="defect-list">${cards.join("")}</div>`;
+}
+
+function renderImages(f) {
+  const sel = document.getElementById("imgSelect");
+  const imgEl = document.getElementById("imgEl");
+
+  // ダミー画像を2枚生成
+  const imgs = {
+    "全体_scan.png": makePlaceholderImage(640, 480, "全体スキャン画像", "#88cc88"),
+    "thumbnail.png": makePlaceholderImage(320, 240, "サムネイル",       "#cc8888"),
+  };
+  sel.innerHTML = Object.keys(imgs).map(k => `<option value="${escHtml(k)}">${escHtml(k)}</option>`).join("");
+  sel._images = imgs;
+  imgEl.src = "data:image/png;base64," + Object.values(imgs)[0];
+  imgEl.style.display = "";
+}
+
+function showImage() {
+  const sel = document.getElementById("imgSelect");
+  const img = document.getElementById("imgEl");
+  const imgs = sel._images || {};
+  if (imgs[sel.value]) {
+    img.src = "data:image/png;base64," + imgs[sel.value];
+    img.style.display = "";
+  }
+}
+
+function showTab(name, ev) {
+  document.querySelectorAll(".tab-pane").forEach(e => e.classList.remove("active"));
+  document.querySelectorAll(".tab-btn").forEach(e => e.classList.remove("active"));
+  document.getElementById("pane-" + name).classList.add("active");
+  const btn = ev?.currentTarget;
+  if (btn) btn.classList.add("active");
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+function escAttr(s) {
+  return s.replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/"/g,"&quot;");
+}
+
+// 起動時にダミーデータを自動ロード
+window.onload = () => loadFolder();
+</script>
+</body>
+</html>
