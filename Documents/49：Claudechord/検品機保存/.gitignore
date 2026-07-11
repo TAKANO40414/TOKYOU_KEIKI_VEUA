@@ -1,0 +1,17 @@
+# 検品データファイル
+*.pc5
+
+# ビルド成果物（バイナリ・大容量ファイル）
+*.exe
+*.zip
+*.pkg
+*.pyc
+dist/
+build/
+node_modules/
+
+# macOS
+.DS_Store
+
+# バックアップ
+*.bak

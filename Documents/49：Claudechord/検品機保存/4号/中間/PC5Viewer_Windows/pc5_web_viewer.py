@@ -1,0 +1,1772 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+PC5 ウェブビューア
+起動: python3 pc5_web_viewer.py [フォルダパス]
+ブラウザで http://localhost:5000 を開く
+"""
+
+import sys
+import os
+import io
+import base64
+import zipfile
+import xml.etree.ElementTree as ET
+import re
+import json
+import hashlib
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from flask import Flask, render_template_string, jsonify, send_file, abort, request
+
+app = Flask(__name__)
+
+# ─── ファイル情報キャッシュ ───────────────────────────────────────────────────
+# キャッシュファイルはシステム一時フォルダに保存
+import tempfile
+_CACHE_PATH = os.path.join(tempfile.gettempdir(), "pc5viewer_cache.json")
+_cache: dict = {}
+
+def _load_cache():
+    global _cache
+    try:
+        if os.path.exists(_CACHE_PATH):
+            with open(_CACHE_PATH, "r", encoding="utf-8") as f:
+                _cache = json.load(f)
+    except Exception:
+        _cache = {}
+
+def _save_cache():
+    try:
+        with open(_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(_cache, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def _cache_key(path):
+    try:
+        st = os.stat(path)
+        return f"{path}|{st.st_size}|{st.st_mtime}"
+    except Exception:
+        return path
+
+_load_cache()
+
+# 監視フォルダ（起動引数 or カレントディレクトリ）
+WATCH_FOLDER = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
+
+
+# ===== データ解析 =====
+
+def parse_diffgram_rows(xml_bytes):
+    root = ET.fromstring(xml_bytes)
+    rows, headers, seen = [], [], False
+    for child in root:
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag != "diffgram":
+            continue
+        for dataset in child:
+            for row_elem in dataset:
+                row = {}
+                for field in row_elem:
+                    ftag = field.tag.split("}")[-1] if "}" in field.tag else field.tag
+                    row[ftag] = field.text or ""
+                if row:
+                    if not seen:
+                        headers = list(row.keys())
+                        seen = True
+                    rows.append(row)
+    return headers, rows
+
+
+def parse_pc5(path):
+    tables, images, defect_images = {}, {}, {}
+    with zipfile.ZipFile(path, "r") as z:
+        for name in z.namelist():
+            if name.endswith(".xml"):
+                key = os.path.basename(name).replace(".xml", "")
+                headers, rows = parse_diffgram_rows(z.read(name))
+                tables[key] = {"headers": headers, "rows": rows}
+            elif name.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
+                basename = os.path.basename(name)
+                b64 = base64.b64encode(z.read(name)).decode()
+                images[name] = b64
+                # 欠点画像: 0461D.png / 0461R.png / 0461S.png 形式
+                m = re.match(r'^(\d+)([DRS])\.(?:png|jpg|jpeg|bmp)$', basename, re.IGNORECASE)
+                if m:
+                    num, itype = m.group(1), m.group(2).upper()
+                    if num not in defect_images:
+                        defect_images[num] = {}
+                    defect_images[num][itype] = b64
+    return tables, images, defect_images
+
+
+def parse_filename(filename):
+    base = os.path.basename(filename)
+    m = re.match(r"(\d+)-#(\d+)@(\d{4}\w+\d+)-(\d+)h(\d+)m(\d+)", base)
+    if m:
+        return {
+            "lot": m.group(1),
+            "seq": int(m.group(2)),
+            "date": m.group(3),
+            "time": f"{m.group(4)}:{m.group(5)}:{m.group(6)}",
+        }
+    return {"lot": "", "seq": 0, "date": "", "time": ""}
+
+
+def get_log_info(path):
+    """PC5ファイルからLogTableの主要項目と欠点数を高速取得（キャッシュ付き）"""
+    key = _cache_key(path)
+    if key in _cache:
+        return _cache[key]
+    try:
+        with zipfile.ZipFile(path, "r") as z:
+            names = z.namelist()
+            log_row = {}
+            if "LogTable.xml" in names:
+                _, rows = parse_diffgram_rows(z.read("LogTable.xml"))
+                log_row = rows[0] if rows else {}
+            defect_count = 0
+            if "DefectTable.xml" in names:
+                _, drows = parse_diffgram_rows(z.read("DefectTable.xml"))
+                principal = [r for r in drows if r.get("PrincipalFlag") == "true"]
+                defect_count = len(principal) if principal else len(drows)
+            log_row["_defect_count"] = defect_count
+        _cache[key] = log_row
+        _save_cache()
+        return log_row
+    except Exception:
+        return {"_defect_count": 0}
+
+
+MONTH_MAP = {
+    "Jan":"01","Feb":"02","Mar":"03","Apr":"04","May":"05","Jun":"06",
+    "Jul":"07","Aug":"08","Sep":"09","Oct":"10","Nov":"11","Dec":"12",
+}
+
+def parse_date_folder(name):
+    """'2026May15' → {'sort_key':'20260515', 'label':'2026年5月15日', 'folder':name}"""
+    m = re.match(r'^(\d{4})([A-Za-z]{3})(\d{1,2})$', name)
+    if m:
+        y, mon, d = m.group(1), m.group(2).capitalize(), m.group(3).zfill(2)
+        mo = MONTH_MAP.get(mon)
+        if mo:
+            return {
+                "sort_key": f"{y}{mo}{d}",
+                "label":    f"{y}年{int(mo)}月{int(d)}日",
+                "folder":   name,
+            }
+    return None
+
+
+def list_pc5_files(folder, max_days=30):
+    """
+    folder 直下に日付フォルダ（2026May15 形式）があればそれを走査。
+    max_days: 最新から何日分読むか（0=全件）
+    なければ folder 直下の PC5 を直接返す（後方互換）。
+    """
+    if not os.path.isdir(folder):
+        return []
+
+    # 日付フォルダを探す
+    date_folders = []
+    for entry in os.scandir(folder):
+        if entry.is_dir():
+            info = parse_date_folder(entry.name)
+            if info:
+                date_folders.append((info, entry.path))
+
+    def make_entry(f, full_path, info=None):
+        meta = parse_filename(f)
+        log  = get_log_info(full_path)
+        return {
+            "filename":        f,
+            "subfolder":       info["folder"] if info else "",
+            "folder_label":    info["label"]  if info else "",
+            "folder_sort_key": info["sort_key"] if info else "",
+            "path":            full_path,
+            "product_name":    log.get("IdInfo_1", ""),
+            "lot_no":          log.get("IdInfo_0", meta["lot"]),
+            "part_no":         log.get("IdInfo_3", ""),
+            "customer":        log.get("IdInfo_6", ""),
+            "defect_count":    log.get("_defect_count", 0),
+            **meta,
+        }
+
+    if date_folders:
+        date_folders.sort(key=lambda x: x[0]["sort_key"], reverse=True)
+        # max_days で件数制限（0=全件）
+        if max_days > 0:
+            date_folders = date_folders[:max_days]
+        date_folders.sort(key=lambda x: x[0]["sort_key"])  # 昇順に戻す
+
+        tasks = []
+        for info, dir_path in date_folders:
+            pc5s = sorted([f for f in os.listdir(dir_path) if f.lower().endswith(".pc5")])
+            for f in pc5s:
+                tasks.append((f, os.path.join(dir_path, f), info))
+
+        entries = {}
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            futures = {ex.submit(make_entry, f, p, info): (f, p, info) for f, p, info in tasks}
+            for fut in as_completed(futures):
+                f, p, info = futures[fut]
+                entries[(info["sort_key"], f)] = fut.result()
+
+        return [entries[k] for k in sorted(entries.keys())]
+
+    # 日付フォルダなし → folder 直下の PC5 を返す（従来動作）
+    pc5s = sorted([f for f in os.listdir(folder) if f.lower().endswith(".pc5")])
+    entries = {}
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        futures = {ex.submit(make_entry, f, os.path.join(folder, f)): f for f in pc5s}
+        for fut in as_completed(futures):
+            f = futures[fut]
+            entries[f] = fut.result()
+    return [entries[f] for f in pc5s if f in entries]
+
+
+# ===== HTML テンプレート =====
+
+HTML = r"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PC5 ビューア</title>
+<style>
+  :root {
+    --bg: #f0f2f5;
+    --panel: #ffffff;
+    --accent: #1565c0;
+    --accent2: #e3f2fd;
+    --border: #dde3ea;
+    --text: #1a1a2e;
+    --muted: #6b7280;
+    --row-even: #f8faff;
+    --row-odd: #ffffff;
+    --selected: #bbdefb;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Helvetica Neue", Arial, "Hiragino Sans", sans-serif;
+         background: var(--bg); color: var(--text); font-size: 14px; }
+
+  /* ヘッダー */
+  header {
+    background: var(--accent); color: #fff;
+    padding: 10px 20px; display: flex; align-items: center; gap: 14px;
+    box-shadow: 0 2px 6px rgba(0,0,0,.25);
+  }
+  header h1 { font-size: 18px; font-weight: 600; letter-spacing: .5px; }
+  header .folder-bar { display: flex; gap: 8px; flex: 1; align-items: center; }
+  header input[type=text] {
+    flex: 1; padding: 5px 10px; border-radius: 6px; border: none;
+    font-size: 13px; background: rgba(255,255,255,.15); color: #fff;
+  }
+  header input[type=text]::placeholder { color: rgba(255,255,255,.6); }
+  header button {
+    padding: 6px 14px; border-radius: 6px; border: none; cursor: pointer;
+    font-size: 13px; font-weight: 600;
+    background: #fff; color: var(--accent);
+  }
+  header button:hover { background: #e3f2fd; }
+
+  /* フォルダ選択モーダル */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.45); z-index: 1000;
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: #fff; border-radius: 10px; width: 560px; max-width: 95vw;
+    box-shadow: 0 8px 32px rgba(0,0,0,.3); display: flex; flex-direction: column;
+    max-height: 80vh;
+  }
+  .modal-header {
+    padding: 14px 18px; font-weight: 700; font-size: 15px;
+    border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px;
+  }
+  .modal-header .modal-path {
+    flex: 1; font-size: 12px; font-weight: 400; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .modal-header button.close-btn {
+    background: none; border: none; font-size: 20px; cursor: pointer;
+    color: var(--muted); padding: 0 4px; line-height: 1;
+  }
+  .modal-body { flex: 1; overflow-y: auto; padding: 8px 0; }
+  .dir-item {
+    padding: 9px 18px; cursor: pointer; display: flex; align-items: center; gap: 10px;
+    font-size: 14px; transition: background .12s;
+  }
+  .dir-item:hover { background: var(--accent2); }
+  .dir-item .icon { font-size: 18px; flex-shrink: 0; }
+  .dir-item.up { color: var(--muted); font-style: italic; }
+  .modal-footer {
+    padding: 12px 18px; border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .modal-footer .sel-path {
+    flex: 1; font-size: 13px; color: var(--text);
+    background: var(--bg); padding: 6px 10px; border-radius: 6px;
+    border: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .modal-footer button.ok-btn {
+    padding: 7px 20px; border-radius: 6px; border: none; cursor: pointer;
+    font-size: 13px; font-weight: 700;
+    background: var(--accent); color: #fff;
+  }
+  .modal-footer button.ok-btn:hover { background: #0d47a1; }
+  .modal-footer button.cancel-btn {
+    padding: 7px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: #fff; cursor: pointer; font-size: 13px;
+  }
+  .modal-loading { padding: 24px; text-align: center; color: var(--muted); }
+
+  /* レイアウト */
+  .layout { display: flex; height: calc(100vh - 50px); }
+
+  /* 左パネル */
+  .sidebar {
+    width: 300px; min-width: 220px; max-width: 400px;
+    background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    resize: horizontal; overflow: auto;
+  }
+  .sidebar-title {
+    padding: 10px 14px; font-weight: 700; font-size: 13px;
+    border-bottom: 1px solid var(--border); background: #fafbfc;
+    color: var(--muted); display: flex; align-items: center; justify-content: space-between;
+  }
+  .sidebar-search {
+    padding: 8px 10px; border-bottom: 1px solid var(--border); background: #fff;
+  }
+  .sidebar-search input {
+    width: 100%; padding: 5px 9px; border-radius: 6px; border: 1px solid var(--border);
+    font-size: 12px; outline: none;
+  }
+  .sidebar-search input:focus { border-color: var(--accent); }
+  .file-list { flex: 1; overflow-y: auto; }
+
+  /* 日付グループ */
+  .date-group { border-bottom: 2px solid var(--border); }
+  .date-header {
+    padding: 9px 14px; cursor: pointer; background: #1565c0;
+    display: flex; align-items: center; gap: 8px;
+    font-weight: 700; font-size: 13px; color: #fff;
+    position: sticky; top: 0; z-index: 2;
+    user-select: none;
+  }
+  .date-header:hover { background: #1976d2; }
+  .date-header .arrow { font-size: 10px; transition: transform .2s; }
+  .date-header.collapsed .arrow { transform: rotate(-90deg); }
+  .date-header .d-count {
+    margin-left: auto; font-size: 11px; font-weight: 400; opacity: .8;
+  }
+  .date-files { }
+  .date-files.collapsed { display: none; }
+
+  /* ファイルアイテム */
+  .file-item {
+    padding: 8px 14px 8px 20px; cursor: pointer; border-bottom: 1px solid var(--border);
+    transition: background .12s;
+  }
+  .file-item:hover { background: var(--accent2); }
+  .file-item.active { background: var(--selected); border-left: 3px solid var(--accent); padding-left: 17px; }
+  .file-item .fi-seq { font-weight: 700; font-size: 13px; color: #333; }
+  .defect-badge {
+    font-size: 11px; font-weight: 700;
+    background: #e74c3c; color: #fff;
+    padding: 1px 6px; border-radius: 8px; white-space: nowrap;
+  }
+  /* 機械グループ */
+  .machine-group { margin-bottom: 4px; }
+  .machine-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 14px; background: #1565c0; color: #fff;
+    cursor: pointer; font-size: 13px; font-weight: 700;
+    position: sticky; top: 0; z-index: 2;
+  }
+  .machine-header:hover { background: #0d47a1; }
+  .machine-header .d-count { margin-left: auto; font-size: 11px; opacity: 0.8; }
+  .machine-header.collapsed .arrow { transform: rotate(-90deg); }
+  .machine-files.collapsed { display: none; }
+  /* チェックボックス付きフォルダ行 */
+  .dir-checkable { display: flex; align-items: center; gap: 0; padding: 0; }
+  .dir-checkable input[type=checkbox] { margin: 0 8px 0 14px; width: 16px; height: 16px; cursor: pointer; flex-shrink:0; }
+  .dir-check-label { flex: 1; display: flex; align-items: center; gap: 8px; padding: 9px 8px 9px 0; cursor: pointer; }
+  .dir-open-btn {
+    padding: 6px 12px; background: none; border: none;
+    color: var(--muted); cursor: pointer; font-size: 13px; flex-shrink: 0;
+  }
+  .dir-open-btn:hover { color: var(--accent); background: var(--accent2); }
+  .pc5-badge {
+    font-size: 10px; background: #1565c0; color: #fff;
+    padding: 1px 5px; border-radius: 4px; margin-left: 4px;
+  }
+  /* 選択済みフォルダチップ */
+  .sel-folder-item {
+    display: flex; align-items: center; gap: 4px;
+    background: #e3f2fd; border: 1px solid #90caf9;
+    border-radius: 12px; padding: 2px 8px; font-size: 12px;
+  }
+  .sel-folder-item button {
+    background: none; border: none; color: #888; cursor: pointer; font-size: 11px; padding: 0 2px;
+  }
+  .sel-folder-item button:hover { color: #e74c3c; }
+  .file-item .fi-product { font-size: 12px; color: var(--accent); margin-top: 1px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 230px; }
+  .file-item .fi-sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .file-count { padding: 8px 14px; font-size: 12px; color: var(--muted);
+                border-top: 1px solid var(--border); background: #fafbfc; }
+
+  /* 右パネル */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* タブ */
+  .tabs {
+    display: flex; background: #fafbfc; border-bottom: 2px solid var(--border);
+    overflow-x: auto; flex-shrink: 0;
+  }
+  .tab-btn {
+    padding: 10px 18px; cursor: pointer; font-size: 13px; font-weight: 600;
+    border: none; background: none; color: var(--muted); white-space: nowrap;
+    border-bottom: 2px solid transparent; margin-bottom: -2px;
+    transition: color .15s;
+  }
+  .tab-btn:hover { color: var(--accent); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* タブコンテンツ */
+  .tab-content { flex: 1; overflow: hidden; }
+  .tab-pane { display: none; height: 100%; overflow: auto; }
+  .tab-pane.active { display: block; }
+
+  /* 概要パネル */
+  .summary { padding: 20px; max-width: 900px; }
+  .summary-section { margin-bottom: 24px; }
+  .summary-section h2 {
+    font-size: 15px; font-weight: 700; color: var(--accent);
+    border-bottom: 2px solid var(--accent2); padding-bottom: 6px; margin-bottom: 12px;
+  }
+  .summary-grid { display: grid; grid-template-columns: 180px 1fr; gap: 6px 12px; }
+  .summary-grid .k { font-weight: 600; color: var(--muted); font-size: 13px; }
+  .summary-grid .v { font-size: 13px; }
+
+  /* テーブル */
+  .table-wrap { height: 100%; overflow: auto; }
+  table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: 13px; }
+  th {
+    position: sticky; top: 0; background: var(--accent); color: #fff;
+    padding: 8px 12px; text-align: left; font-weight: 600; white-space: nowrap;
+    border-right: 1px solid rgba(255,255,255,.2); z-index: 1;
+  }
+  td { padding: 7px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tr:nth-child(even) td { background: var(--row-even); }
+  tr:nth-child(odd)  td { background: var(--row-odd); }
+  tr:hover td { background: var(--accent2); }
+
+  /* 欠陥カード */
+  .defect-list { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .defect-card {
+    background: #fff; border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.06);
+  }
+  .defect-card-header {
+    padding: 8px 14px; background: #f0f4ff;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+  }
+  .defect-card-header .d-seq {
+    font-weight: 800; font-size: 15px; color: var(--accent);
+  }
+  .defect-card-header .d-kind {
+    font-weight: 700; font-size: 13px; color: #c0392b;
+    background: #fdecea; padding: 2px 8px; border-radius: 4px;
+  }
+  .defect-card-header .d-judge {
+    font-size: 12px; color: var(--muted);
+  }
+  .defect-card-header .d-meter {
+    margin-left: auto; font-size: 14px; font-weight: 700;
+    color: #1a6b3c; background: #e6f4ec;
+    padding: 2px 10px; border-radius: 12px; letter-spacing: 0.3px;
+  }
+  /* 位置バー */
+  .pos-bar-wrap {
+    margin: 8px 16px 4px; padding: 8px 12px;
+    background: #f7f9ff; border: 1px solid var(--border); border-radius: 6px;
+  }
+  .pos-bar-label {
+    font-size: 11px; color: var(--muted); margin-bottom: 6px;
+  }
+  .pos-bar {
+    position: relative; height: 20px; background: #dde3f0;
+    border-radius: 4px; overflow: visible;
+  }
+  .pos-bar-start, .pos-bar-end {
+    position: absolute; top: 22px; font-size: 10px; color: var(--muted);
+  }
+  .pos-bar-start { left: 0; }
+  .pos-bar-end   { right: 0; }
+  .pos-dot {
+    position: absolute; top: 50%; transform: translate(-50%, -50%);
+    width: 10px; height: 10px; background: #e74c3c;
+    border-radius: 50%; border: 2px solid #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3); cursor: pointer;
+  }
+  .defect-card-body { display: flex; gap: 0; }
+  /* 欠点カード画像エリア */
+  .defect-imgs {
+    background: #111; padding: 10px 12px 6px;
+    border-bottom: 1px solid #333;
+  }
+  /* 欠点＋参照を横並び（大きく） */
+  .defect-img-main {
+    display: flex; gap: 8px; align-items: flex-start; margin-bottom: 6px;
+  }
+  .defect-img-block {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    flex: 1;
+  }
+  .defect-img-block .img-label {
+    font-size: 11px; font-weight: 700; color: #ccc; letter-spacing: .5px;
+    background: #2a2a2a; padding: 1px 8px; border-radius: 3px;
+  }
+  .defect-img-block .img-wrap {
+    width: 100%; overflow: hidden; background: #1a1a1a;
+    border-radius: 4px; border: 1px solid #333;
+    cursor: zoom-in; position: relative;
+  }
+  .defect-img-block .img-wrap img {
+    width: 100%; height: auto; display: block;
+    transform-origin: top left;
+    transition: transform 0.1s;
+    user-select: none; pointer-events: none;
+  }
+  .defect-img-block .img-wrap.no-img-wrap {
+    height: 120px; display: flex; align-items: center;
+    justify-content: center; color: #444; font-size: 12px;
+  }
+  /* 形状画像（小さめ） */
+  .defect-img-shape {
+    display: flex; gap: 8px; align-items: flex-start;
+  }
+  .defect-img-shape .defect-img-block {
+    flex: 0 0 auto; width: 120px;
+  }
+  .defect-img-shape .defect-img-block .img-wrap img { width: 120px; height: auto; }
+  /* ズームヒント */
+  .img-zoom-hint {
+    font-size: 10px; color: #555; text-align: center; margin-top: 2px;
+  }
+  .defect-meta {
+    padding: 10px 14px; font-size: 12px; display: grid;
+    grid-template-columns: 120px 1fr; gap: 3px 8px; align-content: start;
+  }
+  .defect-meta .mk { color: var(--muted); font-weight: 600; }
+  .defect-meta .mv { color: var(--text); }
+  /* 画像拡大モーダル */
+  .img-zoom-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.92);
+    z-index: 2000; flex-direction: column;
+  }
+  .img-zoom-overlay.open { display: flex; }
+  .zoom-toolbar {
+    flex-shrink: 0; padding: 8px 16px; display: flex; align-items: center; gap: 10px;
+    background: rgba(0,0,0,.6); z-index: 1;
+  }
+  .zoom-toolbar button {
+    padding: 5px 14px; border-radius: 6px; border: none; cursor: pointer;
+    font-size: 14px; font-weight: 700; background: rgba(255,255,255,.15); color: #fff;
+  }
+  .zoom-toolbar button:hover { background: rgba(255,255,255,.3); }
+  .zoom-toolbar .zoom-label { color: #ccc; font-size: 13px; min-width: 48px; text-align: center; }
+  .zoom-toolbar .zoom-hint { color: #888; font-size: 12px; margin-left: auto; }
+  .zoom-canvas-wrap {
+    flex: 1; overflow: hidden; position: relative; cursor: grab;
+  }
+  .zoom-canvas-wrap.dragging { cursor: grabbing; }
+  .zoom-canvas-wrap img {
+    position: absolute; transform-origin: top left;
+    user-select: none; -webkit-user-drag: none;
+  }
+
+  /* 画像パネル */
+  .image-panel { padding: 16px; height: 100%; display: flex; flex-direction: column; gap: 12px; }
+  .image-select { display: flex; gap: 10px; align-items: center; }
+  .image-select select {
+    flex: 1; padding: 7px 10px; border-radius: 6px;
+    border: 1px solid var(--border); font-size: 13px;
+  }
+  .image-frame {
+    flex: 1; background: #1e1e1e; border-radius: 8px; overflow: auto;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .image-frame img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+  /* ローディング / メッセージ */
+  .placeholder {
+    height: 100%; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 15px; flex-direction: column; gap: 10px;
+  }
+  .placeholder .icon { font-size: 48px; }
+  .spinner {
+    width: 36px; height: 36px; border: 4px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ステータスバー */
+  .statusbar {
+    padding: 5px 14px; font-size: 12px; color: var(--muted);
+    border-top: 1px solid var(--border); background: #fafbfc; flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🔍 PC5 ビューア</h1>
+  <div class="folder-bar">
+    <input type="text" id="folderInput" placeholder="フォルダパスを入力するか、右のボタンで選択..."
+           onkeydown="if(event.key==='Enter') loadFolder()">
+    <button onclick="loadFolder()">▶ 開く</button>
+    <button onclick="openFolderPicker()">📂 参照...</button>
+  </div>
+</header>
+
+<!-- フォルダ選択モーダル -->
+<div class="modal-overlay" id="folderModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span>フォルダを選択</span>
+      <span class="modal-path" id="modalPath"></span>
+      <button class="close-btn" onclick="closeModal()">×</button>
+    </div>
+    <!-- クイックアクセスバー -->
+    <div style="display:flex;gap:6px;padding:6px 12px;background:#f0f4ff;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+      <button onclick="showDrives()" style="padding:4px 10px;border-radius:5px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:12px;">🖥 ドライブ一覧</button>
+      <button onclick="browseDir(homeDir)" style="padding:4px 10px;border-radius:5px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:12px;">🏠 ホーム</button>
+      <button onclick="promptUNC()" style="padding:4px 10px;border-radius:5px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:12px;">🌐 ネットワーク(\\server\share)</button>
+    </div>
+    <div class="modal-body" id="modalBody">
+      <div class="modal-loading">読み込み中...</div>
+    </div>
+    <div class="modal-footer" style="flex-direction:column;gap:8px;align-items:stretch;">
+      <!-- 選択済みフォルダ一覧 -->
+      <div style="background:#f0f4ff;border:1px solid var(--border);border-radius:6px;padding:6px 10px;">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">✔ 選択済みフォルダ（複数選択可）</div>
+        <div id="selectedFoldersList" style="display:flex;flex-wrap:wrap;gap:4px;">
+          <span style="color:#aaa;font-size:12px;">フォルダが選択されていません</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input type="text" id="modalDirectInput" placeholder="パスを直接入力...  例: \\server\share\データ"
+          style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid var(--border);font-size:13px;"
+          onkeydown="if(event.key==='Enter'){browseDir(this.value);}">
+        <button class="cancel-btn" onclick="closeModal()">キャンセル</button>
+        <button class="ok-btn" onclick="confirmFolder()">✔ 選択して開く</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 画像拡大モーダル -->
+<div class="img-zoom-overlay" id="imgZoom">
+  <div class="zoom-toolbar">
+    <button onclick="zoomStep(-1)">－</button>
+    <span class="zoom-label" id="zoomLabel">100%</span>
+    <button onclick="zoomStep(+1)">＋</button>
+    <button onclick="zoomFit()">画面に合わせる</button>
+    <button onclick="zoomActual()">実寸(100%)</button>
+    <button onclick="zoomActual(4)">400%</button>
+    <span class="zoom-hint">ホイールで拡縮　ドラッグで移動　Escで閉じる</span>
+    <button onclick="closeZoom()" style="margin-left:8px;background:rgba(255,80,80,.3);">✕ 閉じる</button>
+  </div>
+  <div class="zoom-canvas-wrap" id="zoomWrap">
+    <img id="imgZoomEl" src="" draggable="false">
+  </div>
+</div>
+
+<div class="layout">
+  <!-- 左: ファイルリスト -->
+  <div class="sidebar">
+    <div class="sidebar-title">
+      <span>PC5 ファイル一覧</span>
+    </div>
+    <div class="sidebar-search">
+      <input type="text" id="searchInput" placeholder="🔍 製品名・注文NOで絞り込み..." oninput="filterList()">
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-bottom:1px solid var(--border);background:#fafbff;">
+      <span style="font-size:11px;color:var(--muted);flex-shrink:0;">表示期間</span>
+      <select id="daysSelect" onchange="reloadWithDays()" style="flex:1;font-size:12px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;">
+        <option value="7" selected>直近7日</option>
+        <option value="30">直近30日</option>
+        <option value="90">直近3ヶ月</option>
+        <option value="180">直近6ヶ月</option>
+        <option value="365">直近1年</option>
+        <option value="0">全期間</option>
+      </select>
+    </div>
+    <div class="file-list" id="fileList">
+      <div class="placeholder"><span class="icon">📂</span>フォルダを指定してください</div>
+    </div>
+    <div class="file-count" id="fileCount"></div>
+  </div>
+
+  <!-- 右: 詳細 -->
+  <div class="main">
+    <div class="tabs" id="tabBar" style="display:none">
+      <button class="tab-btn active" onclick="showTab('summary')">概要</button>
+      <button class="tab-btn" onclick="showTab('log')">ログ</button>
+      <button class="tab-btn" onclick="showTab('chapter')">チャプター</button>
+      <button class="tab-btn" onclick="showTab('event')">イベント</button>
+      <button class="tab-btn" onclick="showTab('defect')">欠陥</button>
+      <button class="tab-btn" onclick="showTab('result')">結果</button>
+      <button class="tab-btn" onclick="showTab('machine')">機械</button>
+      <button class="tab-btn" onclick="showTab('env')">環境</button>
+      <button class="tab-btn" onclick="showTab('image')">画像</button>
+    </div>
+
+    <div class="tab-content">
+      <div class="tab-pane active" id="pane-summary">
+        <div class="placeholder"><span class="icon">📋</span>ファイルを選択してください</div>
+      </div>
+      <div class="tab-pane" id="pane-log"></div>
+      <div class="tab-pane" id="pane-chapter"></div>
+      <div class="tab-pane" id="pane-event"></div>
+      <div class="tab-pane" id="pane-defect"></div>
+      <div class="tab-pane" id="pane-result"></div>
+      <div class="tab-pane" id="pane-machine"></div>
+      <div class="tab-pane" id="pane-env"></div>
+      <div class="tab-pane" id="pane-image">
+        <div class="image-panel">
+          <div class="image-select">
+            <label>画像ファイル:</label>
+            <select id="imgSelect" onchange="showImage()"><option>─</option></select>
+          </div>
+          <div class="image-frame"><img id="imgEl" src="" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="statusbar" id="statusBar">フォルダを指定してください</div>
+  </div>
+</div>
+
+<script>
+let currentFolder = "";
+let currentData = null;
+let modalCurrentPath = "";
+let homeDir = "";
+
+// 選択済みフォルダセット（複数対応）
+let selectedFolders = new Set();
+
+// --- フォルダ選択モーダル ---
+async function openFolderPicker() {
+  const startPath = currentFolder || await getDefaultFolder();
+  document.getElementById("folderModal").classList.add("open");
+  renderSelectedFolders();
+  await browseDir(startPath);
+}
+
+function closeModal() {
+  document.getElementById("folderModal").classList.remove("open");
+}
+
+async function getDefaultFolder() {
+  const res = await fetch("/api/default_folder");
+  const d = await res.json();
+  homeDir = homeDir || d.folder || "/";
+  return d.folder || "/";
+}
+
+// 選択済みフォルダの表示更新
+function renderSelectedFolders() {
+  const el = document.getElementById("selectedFoldersList");
+  if (!el) return;
+  if (selectedFolders.size === 0) {
+    el.innerHTML = '<span style="color:#aaa;font-size:12px;">フォルダが選択されていません</span>';
+    return;
+  }
+  el.innerHTML = [...selectedFolders].map(p =>
+    `<div class="sel-folder-item">
+      <span>📁 ${escHtml(p.split(/[\\/]/).pop())}</span>
+      <button onclick="removeSelectedFolder('${escAttr(p)}')" title="削除">✕</button>
+    </div>`
+  ).join("");
+}
+
+function removeSelectedFolder(path) {
+  selectedFolders.delete(path);
+  renderSelectedFolders();
+}
+
+function toggleFolderCheck(path, cb) {
+  if (cb.checked) {
+    selectedFolders.add(path);
+  } else {
+    selectedFolders.delete(path);
+  }
+  renderSelectedFolders();
+}
+
+// ドライブ一覧表示
+async function showDrives() {
+  document.getElementById("modalBody").innerHTML = '<div class="modal-loading">読み込み中...</div>';
+  document.getElementById("modalPath").textContent = "ドライブ一覧";
+  const res = await fetch("/api/drives");
+  const d = await res.json();
+  const driveIcons = { '2':'💾','3':'💻','4':'🌐','5':'💿' };
+  let html = (d.drives || []).map(drv =>
+    `<div class="dir-item" onclick="browseDir('${escAttr(drv.path)}')">
+      <span class="icon">${driveIcons[drv.drive_type]||'💻'}</span>
+      <span>${escHtml(drv.name)}</span>
+    </div>`
+  ).join('') || '<div class="modal-loading">ドライブが見つかりません</div>';
+  document.getElementById("modalBody").innerHTML = html;
+}
+
+// UNCパス入力
+function promptUNC() {
+  const val = prompt('ネットワークパスを入力してください\n例: \\\\server\\share\\データフォルダ');
+  if (val && val.trim()) {
+    browseDir(val.trim());
+  }
+}
+
+async function browseDir(browsePath) {
+  modalCurrentPath = browsePath;
+  document.getElementById("modalPath").textContent = browsePath;
+  document.getElementById("modalDirectInput").value = browsePath;
+  document.getElementById("modalBody").innerHTML = '<div class="modal-loading">読み込み中...</div>';
+
+  const res = await fetch("/api/browse?path=" + encodeURIComponent(browsePath));
+  const d = await res.json();
+  if (d.error) {
+    document.getElementById("modalBody").innerHTML =
+      `<div class="modal-loading">⚠️ ${escHtml(d.error)}</div>`;
+    return;
+  }
+
+  let html = "";
+  if (d.parent) {
+    html += `<div class="dir-item up" onclick="browseDir('${escAttr(d.parent)}')">
+      <span class="icon">↑</span><span>上のフォルダへ戻る</span></div>`;
+  } else {
+    html += `<div class="dir-item up" onclick="showDrives()">
+      <span class="icon">🖥</span><span>ドライブ一覧へ戻る</span></div>`;
+  }
+  for (const item of d.dirs) {
+    const hasPc5 = item.has_pc5 ? " <span class='pc5-badge'>PC5</span>" : "";
+    const checked = selectedFolders.has(item.path) ? "checked" : "";
+    const cbId = "cb_" + btoa(encodeURIComponent(item.path)).replace(/[=+/]/g,"_");
+    html += `<div class="dir-item dir-checkable">
+      <input type="checkbox" id="${cbId}" ${checked}
+             onchange="toggleFolderCheck('${escAttr(item.path)}', this)"
+             onclick="event.stopPropagation()">
+      <label for="${cbId}" onclick="event.stopPropagation()" class="dir-check-label">
+        <span class="icon">📁</span><span>${escHtml(item.name)}${hasPc5}</span>
+      </label>
+      <button class="dir-open-btn" onclick="browseDir('${escAttr(item.path)}')" title="中を開く">▶</button>
+    </div>`;
+  }
+  if (!d.dirs.length) {
+    html += '<div class="modal-loading">サブフォルダがありません</div>';
+  }
+  document.getElementById("modalBody").innerHTML = html;
+}
+
+function confirmFolder() {
+  // 直接入力がある場合はそれを追加
+  const typed = document.getElementById("modalDirectInput").value.trim();
+  if (typed) selectedFolders.add(typed);
+
+  // 選択フォルダがなければ現在表示中のパスを使用
+  if (selectedFolders.size === 0 && modalCurrentPath) {
+    selectedFolders.add(modalCurrentPath);
+  }
+
+  closeModal();
+  loadFolders([...selectedFolders]);
+}
+
+let allFiles = [];
+
+let currentFolders = [];
+
+// 表示期間変更時に再読み込み
+function reloadWithDays() {
+  if (currentFolders.length) loadFolders(currentFolders);
+}
+
+// --- 複数フォルダ読み込み ---
+async function loadFolders(folders) {
+  if (!folders || !folders.length) return;
+  currentFolders = folders;
+  currentFolder = folders[0];
+  document.getElementById("folderInput").value = folders.length === 1
+    ? folders[0]
+    : `${folders.length} フォルダ選択中`;
+  document.getElementById("statusBar").textContent = "読み込み中...";
+  document.getElementById("fileList").innerHTML = '<div class="placeholder"><div class="spinner"></div></div>';
+  document.getElementById("searchInput").value = "";
+
+  const days = document.getElementById("daysSelect")?.value ?? "30";
+  const params = folders.map(f => "folder=" + encodeURIComponent(f)).join("&") + "&days=" + days;
+  const res = await fetch("/api/files?" + params);
+  const data = await res.json();
+
+  if (data.error) {
+    document.getElementById("fileList").innerHTML =
+      `<div class="placeholder">⚠️ ${data.error}</div>`;
+    document.getElementById("statusBar").textContent = "エラー: " + data.error;
+    return;
+  }
+
+  allFiles = data.files;
+  renderFileList(allFiles);
+  const dcount = new Set(allFiles.map(f => f.folder_label || "─")).size;
+  document.getElementById("fileCount").textContent =
+    `合計 ${allFiles.length} ファイル / ${dcount} 日分`;
+  document.getElementById("statusBar").textContent =
+    folders.length === 1 ? "フォルダ: " + folders[0]
+                         : `${folders.length} フォルダ読み込み済み`;
+}
+
+// 後方互換
+async function loadFolder(folder) {
+  if (!folder) folder = document.getElementById("folderInput").value.trim();
+  if (!folder) return;
+  selectedFolders = new Set([folder]);
+  await loadFolders([folder]);
+}
+
+// --- 絞り込み ---
+function filterList() {
+  const q = document.getElementById("searchInput").value.trim().toLowerCase();
+  if (!q) { renderFileList(allFiles); return; }
+  const filtered = allFiles.filter(f =>
+    (f.product_name || "").toLowerCase().includes(q) ||
+    (f.lot_no || "").toLowerCase().includes(q) ||
+    (f.part_no || "").toLowerCase().includes(q) ||
+    (f.folder_label || "").toLowerCase().includes(q) ||
+    (f.filename || "").toLowerCase().includes(q)
+  );
+  renderFileList(filtered);
+}
+
+// --- ファイル一覧描画（機械→日付 2段グループ） ---
+function renderFileList(files) {
+  const el = document.getElementById("fileList");
+
+  // 欠点ありのファイルだけに絞り込む
+  const defectFiles = files.filter(f => (f.defect_count || 0) > 0);
+
+  if (!defectFiles.length) {
+    el.innerHTML = files.length
+      ? '<div class="placeholder">欠点のあるファイルが見つかりません</div>'
+      : '<div class="placeholder">PC5ファイルが見つかりません</div>';
+    return;
+  }
+
+  // 機械名でグループ化（machine_name がなければ単一グループ）
+  const machines = new Map();
+  for (const f of defectFiles) {
+    const mkey = f.machine_name || "";
+    if (!machines.has(mkey)) machines.set(mkey, new Map());
+    const dateMap = machines.get(mkey);
+    const dkey = f.folder_label || "─";
+    if (!dateMap.has(dkey)) dateMap.set(dkey, []);
+    dateMap.get(dkey).push(f);
+  }
+
+  const multiMachine = machines.size > 1;
+  let html = "";
+
+  for (const [machineName, dateMap] of machines) {
+    const mid = "m_" + btoa(encodeURIComponent(machineName || "_")).replace(/[=+/]/g,"_");
+    const machineTotal = [...dateMap.values()].reduce((s, a) => s + a.length, 0);
+
+    let innerHtml = "";
+    for (const [dateLabel, gfiles] of dateMap) {
+      const gid = "g_" + btoa(encodeURIComponent(machineName + dateLabel)).replace(/[=+/]/g,"_");
+      innerHtml += `
+      <div class="date-group">
+        <div class="date-header" id="ph_${gid}" onclick="toggleGroup('${gid}')">
+          <span class="arrow">▼</span>
+          <span>📅 ${escHtml(dateLabel)}</span>
+          <span class="d-count">${gfiles.length} 件</span>
+        </div>
+        <div class="date-files" id="pf_${gid}">
+          ${gfiles.map(f => {
+            const fid = escAttr(machineName + f.folder_label + f.filename);
+            return `
+            <div class="file-item"
+                 onclick="loadFile('${escAttr(f.filename)}','${escAttr(f.subfolder)}','${escAttr(f.machine_folder||currentFolder)}')"
+                 id="fi_${fid}">
+              <div class="fi-seq" style="display:flex;align-items:center;gap:6px;">
+                <span>#${f.seq}　<span style="color:var(--muted);font-weight:400">${escHtml(f.lot_no)}</span></span>
+                <span class="defect-badge">⚠ ${f.defect_count}</span>
+              </div>
+              ${f.product_name ? `<div class="fi-product">${escHtml(f.product_name)}</div>` : ""}
+              <div class="fi-sub">${escHtml(f.time)}${f.part_no ? '　品番: '+escHtml(f.part_no) : ''}</div>
+            </div>`;
+          }).join("")}
+        </div>
+      </div>`;
+    }
+
+    if (multiMachine) {
+      html += `
+      <div class="machine-group">
+        <div class="machine-header" id="mh_${mid}" onclick="toggleMachine('${mid}')">
+          <span class="arrow">▼</span>
+          <span>🏭 ${escHtml(machineName || "─")}</span>
+          <span class="d-count">${machineTotal} 件</span>
+        </div>
+        <div class="machine-files" id="mf_${mid}">
+          ${innerHtml}
+        </div>
+      </div>`;
+    } else {
+      html += innerHtml;
+    }
+  }
+
+  el.innerHTML = html;
+
+  // 最初のファイルを自動選択
+  const first = defectFiles[0];
+  loadFile(first.filename, first.subfolder || "", first.machine_folder || currentFolder);
+}
+
+function toggleGroup(gid) {
+  document.getElementById("ph_" + gid).classList.toggle("collapsed");
+  document.getElementById("pf_" + gid).classList.toggle("collapsed");
+}
+
+function toggleMachine(mid) {
+  document.getElementById("mh_" + mid).classList.toggle("collapsed");
+  document.getElementById("mf_" + mid).classList.toggle("collapsed");
+}
+
+// --- ファイル読み込み ---
+async function loadFile(filename, subfolder, machineFolder) {
+  subfolder = subfolder || "";
+  const folder = machineFolder || currentFolder;
+  document.querySelectorAll(".file-item").forEach(e => e.classList.remove("active"));
+  const fi = document.getElementById("fi_" + escAttr(
+    (allFiles.find(f => f.filename===filename)?.machine_name||"") +
+    (allFiles.find(f => f.filename===filename)?.folder_label||"") + filename));
+  if (fi) { fi.classList.add("active"); fi.scrollIntoView({block:"nearest"}); }
+
+  document.getElementById("tabBar").style.display = "flex";
+  document.getElementById("statusBar").textContent = "読み込み中: " + filename;
+  showPlaceholder("読み込み中...");
+
+  const res = await fetch("/api/file?folder=" + encodeURIComponent(folder)
+                          + "&filename=" + encodeURIComponent(filename)
+                          + "&subfolder=" + encodeURIComponent(subfolder));
+  currentData = await res.json();
+
+  if (currentData.error) {
+    showPlaceholder("⚠️ " + currentData.error);
+    return;
+  }
+
+  renderSummary(currentData);
+  renderTable("log",     currentData.tables.LogTable);
+  renderTable("chapter", currentData.tables.ChapterTable);
+  renderTable("event",   currentData.tables.EventTable);
+  renderDefects(currentData.tables.DefectTable, currentData.defect_images || {}, currentData.pos_scale || 0, currentData.length_m || 0);
+  renderTable("result",  currentData.tables.ResultTable);
+  renderTable("machine", currentData.tables.MachineTable);
+  renderTable("env",     currentData.tables.EnvironmentTable);
+  renderImages(currentData.images);
+
+  document.getElementById("statusBar").textContent = "表示中: " + filename;
+}
+
+// --- 概要 ---
+function renderSummary(d) {
+  const t = d.tables;
+  const m = (t.MachineTable?.rows || [])[0] || {};
+  const l = (t.LogTable?.rows || [])[0] || {};
+  const c = (t.ChapterTable?.rows || [])[0] || {};
+  const e = (t.EnvironmentTable?.rows || [])[0] || {};
+
+  const section = (title, pairs) => {
+    const rows = pairs.filter(([,v]) => v).map(([k,v]) =>
+      `<div class="k">${k}</div><div class="v">${escHtml(v)}</div>`).join("");
+    return rows ? `<div class="summary-section">
+      <h2>${title}</h2>
+      <div class="summary-grid">${rows}</div>
+    </div>` : "";
+  };
+
+  const fmtTime = s => {
+    if (!s) return "";
+    try { return new Date(s).toLocaleString("ja-JP"); } catch { return s; }
+  };
+
+  document.getElementById("pane-summary").innerHTML = `<div class="summary">
+    ${section("■ 機械情報", [
+      ["機械ID", m.MachineID], ["機械名", m.MachineName],
+      ["ユーザー名", m.UserName],
+      ["システム0", m.SystemName0], ["システム1", m.SystemName1],
+    ])}
+    ${section("■ ジョブ情報", [
+      ["ロット番号", l.IdInfo_0], ["製品名", l.IdInfo_1],
+      ["号機", l.IdInfo_2], ["品番", l.IdInfo_3],
+      ["FOR", l.IdInfo_4], ["刷り面", l.IdInfo_5],
+      ["得意先", l.IdInfo_6], ["枚数", l.IdInfo_7],
+    ])}
+    ${section("■ 検品情報", [
+      ["開始時刻", fmtTime(c.BeginTime)], ["終了時刻", fmtTime(c.EndTime)],
+      ["長さ (m)", c.Length],
+      ["欠陥数 R0", c.DefectsR0], ["欠陥数 R1", c.DefectsR1],
+    ])}
+    ${section("■ 環境設定", [
+      ["タイトル", e.Title], ["LUTゲイン", e.LutGain],
+      ["速度警告レベル", e.SpeedWarningLevel],
+    ])}
+  </div>`;
+}
+
+// --- テーブル ---
+function renderTable(pane, tableData) {
+  const el = document.getElementById("pane-" + pane);
+  if (!tableData || !tableData.rows.length) {
+    el.innerHTML = '<div class="placeholder">データなし</div>';
+    return;
+  }
+  const headers = tableData.headers;
+  const rows = tableData.rows;
+  const ths = headers.map(h => `<th>${escHtml(h)}</th>`).join("");
+  const trs = rows.map(r =>
+    "<tr>" + headers.map(h => `<td>${escHtml(r[h] || "")}</td>`).join("") + "</tr>"
+  ).join("");
+  el.innerHTML = `<div class="table-wrap"><table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`;
+}
+
+// --- 欠陥カード ---
+function renderDefects(tableData, defectImages, posScale, lengthM) {
+  const el = document.getElementById("pane-defect");
+  if (!tableData || !tableData.rows.length) {
+    el.innerHTML = '<div class="placeholder">欠陥データなし</div>';
+    return;
+  }
+
+  // EventId の下4桁ゼロ埋めで画像を引く
+  function imgKey(eventId) {
+    return String(parseInt(eventId) % 10000).padStart(4, "0");
+  }
+
+  // LotPositionY → メートル（妥当性チェック付き）
+  function toMeter(lotPosY) {
+    if (!posScale || !lotPosY) return null;
+    const m = parseFloat(lotPosY) * posScale;
+    // ロール長の110%を超える場合は計算異常とみなす
+    if (lengthM > 0 && m > lengthM * 1.1) return null;
+    if (m < 0) return null;
+    return m.toFixed(2);
+  }
+
+  // ユニークID生成
+  let _imgId = 0;
+  function imgBlock(b64, label, large = true) {
+    const id = "imgw_" + (_imgId++);
+    const src = b64 ? `data:image/png;base64,${b64}` : null;
+    if (src) {
+      return `<div class="defect-img-block">
+        <div class="img-label">${label}</div>
+        <div class="img-wrap" id="${id}"
+             onwheel="imgZoomWheel(event,'${id}')"
+             onmousedown="imgDragStart(event,'${id}')"
+             ondblclick="imgReset('${id}')"
+             onclick="if(!_imgDragged)zoomImg(this.querySelector('img').src)"
+             title="ホイール: 拡縮　ドラッグ: 移動　ダブルクリック: リセット　クリック: 全画面">
+          <img src="${src}" draggable="false">
+        </div>
+        <div class="img-zoom-hint">🔍 ホイール拡縮 / ドラッグ移動 / クリックで全画面</div>
+      </div>`;
+    }
+    return `<div class="defect-img-block">
+      <div class="img-label">${label}</div>
+      <div class="img-wrap no-img-wrap">画像なし</div>
+    </div>`;
+  }
+
+  const principalRows = tableData.rows.filter(r => r.PrincipalFlag === "true");
+  const displayRows = principalRows.length ? principalRows : tableData.rows;
+
+  const cards = displayRows.map((r, i) => {
+    const key   = imgKey(r.EventId || "0");
+    const imgs  = defectImages[key] || {};
+    const hasAny = imgs.D || imgs.R || imgs.S;
+    const meter  = toMeter(r.LotPositionY);
+
+    const metaItems = [
+      ["欠陥ID",   r.DefectId],
+      ["種別",     r.Kind],
+      ["判定",     r.Judge],
+      ["カメラ",   r.Camera],
+      ["サイズ W×H", r.CircumscriptionWidth && r.CircumscriptionHeight
+                    ? `${r.CircumscriptionWidth} × ${r.CircumscriptionHeight} px` : ""],
+      ["欠陥画素数", r.DefectCount],
+      ["明欠点",   r.BrightCount],
+      ["暗欠点",   r.DarkCount],
+    ].filter(([,v]) => v);
+
+    const metaHtml = metaItems.map(([k,v]) =>
+      `<div class="mk">${k}</div><div class="mv">${escHtml(String(v))}</div>`).join("");
+
+    return `<div class="defect-card">
+      <div class="defect-card-header">
+        <span class="d-seq">#${r.DefectId || (i+1)}</span>
+        ${r.Kind ? `<span class="d-kind">${escHtml(r.Kind)}</span>` : ""}
+        ${r.Judge ? `<span class="d-judge">判定: ${escHtml(r.Judge)}</span>` : ""}
+        ${meter !== null
+          ? `<span class="d-meter">📍 ${meter} m</span>`
+          : ""}
+      </div>
+      <div class="defect-card-body">
+        ${hasAny ? `<div class="defect-imgs">
+          <div class="defect-img-main">
+            ${imgs.D ? imgBlock(imgs.D, "欠点 (D)") : ""}
+            ${imgs.R ? imgBlock(imgs.R, "参照 (R)") : ""}
+            ${imgs.D && imgs.S ? `<div class="defect-img-block">
+              <div class="img-label">合成 (D+S)</div>
+              <div class="img-wrap" id="comp_${key}"
+                   onwheel="imgZoomWheel(event,'comp_${key}')"
+                   onmousedown="imgDragStart(event,'comp_${key}')"
+                   ondblclick="imgReset('comp_${key}')"
+                   onclick="if(!_imgDragged)zoomImg(document.getElementById('comp_${key}').querySelector('img').src)"
+                   title="ホイール: 拡縮　ドラッグ: 移動　クリック: 全画面">
+                <img id="cimg_${key}" src="" draggable="false">
+              </div>
+              <div class="img-zoom-hint">🔍 ホイール拡縮 / ドラッグ移動 / クリックで全画面</div>
+            </div>` : ""}
+          </div>
+          ${imgs.S ? `<div class="defect-img-shape">${imgBlock(imgs.S, "形状 (S)", false)}</div>` : ""}
+        </div>` : `<div style="padding:20px;color:#aaa;font-size:12px;background:#111;">画像なし</div>`}
+        <div class="defect-meta">${metaHtml}</div>
+      </div>
+    </div>`;
+  });
+
+  const total = tableData.rows.length;
+  const shown = displayRows.length;
+
+  // 位置バー（ロールの何mかを視覚的に表示）
+  let posBar = "";
+  if (posScale && lengthM > 0) {
+    const totalM = lengthM;
+    const dots = displayRows.map(r => {
+      const m = toMeter(r.LotPositionY);
+      if (!m) return "";
+      const pct = (parseFloat(m) / totalM * 100).toFixed(1);
+      return `<div class="pos-dot" style="left:${pct}%" title="${m} m (${r.Kind||''})"></div>`;
+    }).join("");
+    posBar = `
+      <div class="pos-bar-wrap">
+        <div class="pos-bar-label">ロール全長: ${totalM.toFixed(1)} m</div>
+        <div class="pos-bar">
+          ${dots}
+          <div class="pos-bar-start">0 m</div>
+          <div class="pos-bar-end">${totalM.toFixed(1)} m</div>
+        </div>
+      </div>`;
+  }
+
+  const note = `<div style="padding:6px 16px 2px;font-size:12px;color:var(--muted);">
+    ${principalRows.length ? `主欠点 ${shown} 件（全 ${total} 件）` : `全 ${total} 件`}
+  </div>`;
+
+  el.innerHTML = note + posBar + `<div class="defect-list">${cards.join("")}</div>`;
+
+  // 合成画像を非同期生成（DOM挿入後）
+  requestAnimationFrame(() => {
+    for (const r of displayRows) {
+      const key = imgKey(r.EventId || "0");
+      const imgs = defectImages[key] || {};
+      if (imgs.D && imgs.S) {
+        makeComposite("cimg_" + key, imgs.D, imgs.S);
+      }
+    }
+  });
+}
+
+// ===== 画像拡大ビューア =====
+// ─── D+S 合成画像生成（Canvas） ───────────────────────────────────────────
+function makeComposite(imgId, b64D, b64S, opacity = 0.6) {
+  const target = document.getElementById(imgId);
+  if (!target) return;
+  const imgD = new Image(), imgS = new Image();
+  let loaded = 0;
+  function onLoad() {
+    if (++loaded < 2) return;
+    const w = imgD.naturalWidth || imgD.width;
+    const h = imgD.naturalHeight || imgD.height;
+
+    // ─ 形状画像から「黒以外」のピクセルだけ抽出 ─
+    const offS = document.createElement("canvas");
+    offS.width = w; offS.height = h;
+    const ctxS = offS.getContext("2d");
+    ctxS.drawImage(imgS, 0, 0, w, h);
+    const sdData = ctxS.getImageData(0, 0, w, h);
+    const sd = sdData.data;
+    // 黒に近いピクセル（R+G+B < 30）を透明にする
+    for (let i = 0; i < sd.length; i += 4) {
+      const brightness = sd[i] + sd[i+1] + sd[i+2];
+      if (brightness < 30) {
+        sd[i+3] = 0; // 透明
+      } else {
+        sd[i+3] = Math.round(255 * opacity); // 半透明
+      }
+    }
+    ctxS.putImageData(sdData, 0, 0);
+
+    // ─ 欠点画像に重ねる ─
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(imgD, 0, 0, w, h);       // ベース: 欠点(D)
+    ctx.drawImage(offS, 0, 0, w, h);       // オーバーレイ: 黒以外の形状
+
+    target.src = canvas.toDataURL("image/png");
+  }
+  imgD.onload = onLoad;
+  imgS.onload = onLoad;
+  imgD.src = "data:image/png;base64," + b64D;
+  imgS.src = "data:image/png;base64," + b64S;
+}
+
+// ─── カード内インライン拡縮（ホイール＋ドラッグ） ──────────────────────────
+const _imgState = {}; // id → {scale, tx, ty}
+let _imgDragged = false;
+let _imgDragState = null;
+
+function _getState(id) {
+  if (!_imgState[id]) _imgState[id] = { scale: 1, tx: 0, ty: 0 };
+  return _imgState[id];
+}
+function _applyImgTransform(id) {
+  const wrap = document.getElementById(id);
+  if (!wrap) return;
+  const img = wrap.querySelector("img");
+  if (!img) return;
+  const s = _getState(id);
+  img.style.transform = `translate(${s.tx}px, ${s.ty}px) scale(${s.scale})`;
+}
+function imgZoomWheel(e, id) {
+  e.preventDefault();
+  const s = _getState(id);
+  const factor = e.deltaY < 0 ? 1.15 : 1/1.15;
+  s.scale = Math.min(Math.max(s.scale * factor, 0.5), 10);
+  _applyImgTransform(id);
+}
+function imgDragStart(e, id) {
+  if (e.button !== 0) return;
+  _imgDragged = false;
+  const s = _getState(id);
+  _imgDragState = { id, startX: e.clientX - s.tx, startY: e.clientY - s.ty };
+  const onMove = (ev) => {
+    if (!_imgDragState) return;
+    const dx = ev.clientX - _imgDragState.startX;
+    const dy = ev.clientY - _imgDragState.startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) _imgDragged = true;
+    const ss = _getState(_imgDragState.id);
+    ss.tx = dx; ss.ty = dy;
+    _applyImgTransform(_imgDragState.id);
+  };
+  const onUp = () => {
+    _imgDragState = null;
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    setTimeout(() => { _imgDragged = false; }, 50);
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+function imgReset(id) {
+  _imgState[id] = { scale: 1, tx: 0, ty: 0 };
+  _applyImgTransform(id);
+}
+
+// ─── 全画面ズーム ──────────────────────────────────────────────────────────
+let _zoom = 1, _ox = 0, _oy = 0, _drag = false, _dx = 0, _dy = 0;
+
+function zoomImg(src) {
+  const img = document.getElementById("imgZoomEl");
+  img.onload = () => zoomFit();
+  img.src = src;
+  document.getElementById("imgZoom").classList.add("open");
+  _applyTransform();
+}
+
+function closeZoom() {
+  document.getElementById("imgZoom").classList.remove("open");
+}
+
+function _applyTransform() {
+  const img = document.getElementById("imgZoomEl");
+  img.style.transform = `translate(${_ox}px, ${_oy}px) scale(${_zoom})`;
+  document.getElementById("zoomLabel").textContent = Math.round(_zoom * 100) + "%";
+}
+
+function zoomFit() {
+  const img = document.getElementById("imgZoomEl");
+  const wrap = document.getElementById("zoomWrap");
+  const iw = img.naturalWidth || img.width || 1;
+  const ih = img.naturalHeight || img.height || 1;
+  const ww = wrap.clientWidth, wh = wrap.clientHeight;
+  _zoom = Math.min(ww / iw, wh / ih, 1);
+  _ox = (ww - iw * _zoom) / 2;
+  _oy = (wh - ih * _zoom) / 2;
+  _applyTransform();
+}
+
+function zoomActual(scale) {
+  const img = document.getElementById("imgZoomEl");
+  const wrap = document.getElementById("zoomWrap");
+  _zoom = scale || 1;
+  _ox = (wrap.clientWidth  - img.naturalWidth  * _zoom) / 2;
+  _oy = (wrap.clientHeight - img.naturalHeight * _zoom) / 2;
+  _applyTransform();
+}
+
+function zoomStep(dir) {
+  const steps = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16];
+  const img = document.getElementById("imgZoomEl");
+  const wrap = document.getElementById("zoomWrap");
+  const cx = wrap.clientWidth / 2, cy = wrap.clientHeight / 2;
+  _zoomAround(cx, cy, dir > 0
+    ? (steps.find(s => s > _zoom) || steps[steps.length-1])
+    : ([...steps].reverse().find(s => s < _zoom) || steps[0]));
+}
+
+function _zoomAround(cx, cy, newZoom) {
+  const img = document.getElementById("imgZoomEl");
+  // Keep the pixel under (cx,cy) fixed
+  const imgX = (cx - _ox) / _zoom;
+  const imgY = (cy - _oy) / _zoom;
+  _zoom = newZoom;
+  _ox = cx - imgX * _zoom;
+  _oy = cy - imgY * _zoom;
+  _applyTransform();
+}
+
+// Wheel zoom
+document.addEventListener("DOMContentLoaded", () => {
+  const wrap = document.getElementById("zoomWrap");
+  wrap.addEventListener("wheel", e => {
+    if (!document.getElementById("imgZoom").classList.contains("open")) return;
+    e.preventDefault();
+    const rect = wrap.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    _zoomAround(cx, cy, Math.min(Math.max(_zoom * factor, 0.1), 32));
+  }, {passive: false});
+
+  // Drag
+  wrap.addEventListener("mousedown", e => {
+    _drag = true; _dx = e.clientX - _ox; _dy = e.clientY - _oy;
+    wrap.classList.add("dragging");
+  });
+  window.addEventListener("mousemove", e => {
+    if (!_drag) return;
+    _ox = e.clientX - _dx; _oy = e.clientY - _dy;
+    _applyTransform();
+  });
+  window.addEventListener("mouseup", () => {
+    _drag = false;
+    document.getElementById("zoomWrap").classList.remove("dragging");
+  });
+
+  // Touch drag/pinch
+  let _touches = [];
+  wrap.addEventListener("touchstart", e => { _touches = [...e.touches]; }, {passive: true});
+  wrap.addEventListener("touchmove", e => {
+    if (!document.getElementById("imgZoom").classList.contains("open")) return;
+    e.preventDefault();
+    if (e.touches.length === 1 && _touches.length === 1) {
+      _ox += e.touches[0].clientX - _touches[0].clientX;
+      _oy += e.touches[0].clientY - _touches[0].clientY;
+    } else if (e.touches.length === 2 && _touches.length === 2) {
+      const d0 = Math.hypot(_touches[1].clientX-_touches[0].clientX, _touches[1].clientY-_touches[0].clientY);
+      const d1 = Math.hypot(e.touches[1].clientX-e.touches[0].clientX, e.touches[1].clientY-e.touches[0].clientY);
+      const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - document.getElementById("zoomWrap").getBoundingClientRect().left;
+      const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2 - document.getElementById("zoomWrap").getBoundingClientRect().top;
+      _zoomAround(cx, cy, Math.min(Math.max(_zoom * d1/d0, 0.1), 32));
+    }
+    _touches = [...e.touches];
+    _applyTransform();
+  }, {passive: false});
+
+  // Esc to close
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape") closeZoom();
+  });
+});
+
+// --- 画像 ---
+function renderImages(images) {
+  const sel = document.getElementById("imgSelect");
+  const img = document.getElementById("imgEl");
+  const keys = Object.keys(images || {});
+  sel.innerHTML = keys.map(k => `<option value="${escHtml(k)}">${escHtml(k)}</option>`).join("") || "<option>画像なし</option>";
+  if (keys.length) {
+    img.src = "data:image/png;base64," + images[keys[0]];
+    img.style.display = "";
+  } else {
+    img.style.display = "none";
+  }
+  sel._images = images;
+}
+
+function showImage() {
+  const sel = document.getElementById("imgSelect");
+  const img = document.getElementById("imgEl");
+  const key = sel.value;
+  const images = sel._images || {};
+  if (images[key]) {
+    img.src = "data:image/png;base64," + images[key];
+    img.style.display = "";
+  }
+}
+
+// --- タブ切り替え ---
+function showTab(name) {
+  document.querySelectorAll(".tab-pane").forEach(e => e.classList.remove("active"));
+  document.querySelectorAll(".tab-btn").forEach(e => e.classList.remove("active"));
+  document.getElementById("pane-" + name).classList.add("active");
+  event.currentTarget.classList.add("active");
+}
+
+function showPlaceholder(msg) {
+  document.getElementById("pane-summary").innerHTML =
+    `<div class="placeholder"><span class="icon">⏳</span>${msg}</div>`;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+function escAttr(s) {
+  return String(s).replace(/\\/g,"\\\\").replace(/'/g,"\\'");
+}
+
+// --- 起動時: サーバーのデフォルトフォルダを反映 ---
+window.onload = async () => {
+  const res = await fetch("/api/default_folder");
+  const d = await res.json();
+  document.getElementById("folderInput").value = d.folder;
+  if (d.folder) loadFolder(d.folder);
+};
+</script>
+</body>
+</html>
+"""
+
+
+# ===== バックグラウンドキャッシュウォームアップ =====
+import threading
+_warmup_threads = {}
+
+def _warmup_folder(folder):
+    """初回ロード後にバックグラウンドで全期間キャッシュを積み上げる"""
+    try:
+        list_pc5_files(folder, max_days=0)
+    except Exception:
+        pass
+    finally:
+        _warmup_threads.pop(folder, None)
+
+def start_warmup(folders):
+    for folder in folders:
+        if folder not in _warmup_threads and os.path.isdir(folder):
+            t = threading.Thread(target=_warmup_folder, args=(folder,), daemon=True)
+            _warmup_threads[folder] = t
+            t.start()
+
+
+# ===== API エンドポイント =====
+
+@app.route("/")
+def index():
+    return render_template_string(HTML)
+
+
+@app.route("/api/default_folder")
+def default_folder():
+    return jsonify({"folder": WATCH_FOLDER})
+
+
+@app.route("/api/files")
+def api_files():
+    folders = request.args.getlist("folder")
+    if not folders:
+        folders = [WATCH_FOLDER]
+    try:
+        max_days = int(request.args.get("days", 30))
+    except Exception:
+        max_days = 30
+
+    all_files = []
+    for folder in folders:
+        if not os.path.isdir(folder):
+            continue
+        machine_name = os.path.basename(folder)
+        files = list_pc5_files(folder, max_days=max_days)
+        for f in files:
+            f["machine_name"] = machine_name
+            f["machine_folder"] = folder
+        all_files.extend(files)
+
+    # バックグラウンドで残り期間もキャッシュ（次回以降を高速化）
+    if max_days > 0:
+        start_warmup(folders)
+
+    if not all_files and folders:
+        return jsonify({"error": f"フォルダが見つかりません: {folders[0]}"}), 200
+    return jsonify({"files": all_files})
+
+
+@app.route("/api/drives")
+def api_drives():
+    import platform
+    drives = []
+    if platform.system() == "Windows":
+        import string, ctypes
+        bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+        type_map = {1:"リムーバブル", 2:"リムーバブル", 3:"ローカル", 4:"ネットワーク", 5:"CD/DVD"}
+        for letter in string.ascii_uppercase:
+            if bitmask & 1:
+                p = f"{letter}:\\"
+                dtype = ctypes.windll.kernel32.GetDriveTypeW(p)
+                drives.append({"name": f"{p}  [{type_map.get(dtype,'')}]",
+                               "path": p, "has_pc5": False,
+                               "is_drive": True, "drive_type": str(dtype)})
+            bitmask >>= 1
+    else:
+        # Mac: /Volumes 以下をドライブとして扱う
+        vol = "/Volumes"
+        if os.path.isdir(vol):
+            for e in os.scandir(vol):
+                if e.is_dir():
+                    drives.append({"name": e.name, "path": e.path,
+                                   "has_pc5": False, "is_drive": True, "drive_type": "3"})
+    return jsonify({"drives": drives})
+
+
+@app.route("/api/browse")
+def api_browse():
+    req_path = request.args.get("path", os.path.expanduser("~"))
+    # Windows UNCパス(\\server\share)はabspathを通さない
+    import platform
+    if platform.system() == "Windows" and req_path.startswith("\\\\"):
+        path = req_path
+    else:
+        path = os.path.abspath(req_path)
+    if not os.path.isdir(path):
+        return jsonify({"error": f"フォルダが見つかりません: {path}"}), 200
+    try:
+        entries = sorted(os.scandir(path), key=lambda e: e.name.lower())
+        dirs = []
+        for e in entries:
+            if e.is_dir() and not e.name.startswith("."):
+                try:
+                    children = os.listdir(e.path)
+                    has_pc5 = any(f.lower().endswith(".pc5") for f in children)
+                except PermissionError:
+                    has_pc5 = False
+                dirs.append({"name": e.name, "path": e.path, "has_pc5": has_pc5})
+        parent = str(os.path.dirname(path)) if path != os.path.dirname(path) else None
+        return jsonify({"path": path, "parent": parent, "dirs": dirs})
+    except PermissionError:
+        return jsonify({"error": "アクセスが拒否されました"}), 200
+
+
+@app.route("/api/file")
+def api_file():
+    folder   = request.args.get("folder", WATCH_FOLDER)
+    filename = request.args.get("filename", "")
+    subfolder = request.args.get("subfolder", "")
+    if subfolder:
+        path = os.path.join(folder, subfolder, filename)
+    else:
+        path = os.path.join(folder, filename)
+
+    if not os.path.isfile(path) or not path.endswith(".pc5"):
+        return jsonify({"error": "ファイルが見つかりません"}), 200
+
+    try:
+        tables, images, defect_images = parse_pc5(path)
+        # ChapterTable から位置→メートル換算係数を計算
+        # posScale = Length(m) / EndPosition(エンコーダー値)
+        # 正常値: ~0.00005（50マイクロm/unit）
+        # 異常値: EndPositionが極端に小さい場合は計算しない
+        pos_scale = 0.0
+        length_m  = 0.0
+        ch_rows = tables.get("ChapterTable", {}).get("rows", [])
+        if ch_rows:
+            ch = ch_rows[0]
+            try:
+                length_m = float(ch.get("Length", 0))
+                end_pos  = float(ch.get("EndPosition", 0))
+                if end_pos > 0:
+                    scale = length_m / end_pos
+                    # 妥当性チェック: 1エンコーダー単位が 0.001mm〜10mm の範囲内か
+                    # (scale が 0.000001〜0.01 の範囲が正常)
+                    if 0.000001 < scale < 0.01:
+                        pos_scale = scale
+            except Exception:
+                pass
+        return jsonify({"tables": tables, "images": images,
+                        "defect_images": defect_images,
+                        "pos_scale": pos_scale, "length_m": length_m})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 200
+
+
+if __name__ == "__main__":
+    import webbrowser, threading, socket
+
+    def get_local_ips():
+        ips = []
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None):
+                ip = info[4][0]
+                if ip.startswith(("192.", "10.", "172.")) and ":" not in ip:
+                    if ip not in ips:
+                        ips.append(ip)
+        except Exception:
+            pass
+        return ips
+
+    local_url = "http://localhost:8765"
+    network_ips = get_local_ips()
+
+    print("=" * 60)
+    print("  PC5 ウェブビューア 起動中...")
+    print(f"  監視フォルダ: {WATCH_FOLDER}")
+    print()
+    print("  【このPC から開く】")
+    print(f"    {local_url}")
+    if network_ips:
+        print()
+        print("  【他のPC・スマホ から開く（同じネットワーク内）】")
+        for ip in network_ips:
+            print(f"    http://{ip}:8765")
+    print()
+    print("  終了: Ctrl+C")
+    print("=" * 60)
+
+    threading.Timer(1.2, lambda: webbrowser.open(local_url)).start()
+    app.run(host="0.0.0.0", port=8765, debug=False)

@@ -1,0 +1,8 @@
+PC5Viewer_Windows_v2.1.zip
+  ├ PC5Viewer.exe    ← ダブルクリックで起動（Python不要）
+  ├ viewer.html      ← 画面ファイル
+  ├ install.bat      ← インストーラー（管理者として実行）
+  ├ uninstall.bat    ← アンインストーラー
+  └ readme.txt       ← 使い方
+
+\\192.168.21.22\TOKYO＿KEIKI

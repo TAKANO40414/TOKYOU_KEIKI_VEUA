@@ -1,0 +1,27 @@
+{
+  "name": "pc5viewer_build",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.10",
+    "adm-zip": "^0.5.17",
+    "express": "^5.2.1"
+  },
+  "bin": "server.js",
+  "pkg": {
+    "assets": [
+      "viewer.html"
+    ],
+    "targets": [
+      "node18-win-x64"
+    ],
+    "outputPath": "dist"
+  }
+}
