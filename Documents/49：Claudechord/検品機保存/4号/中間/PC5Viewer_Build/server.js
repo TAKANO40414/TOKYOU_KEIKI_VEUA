@@ -463,10 +463,16 @@ async function listPc5FilesInDir(dir, subfolder, folderLabel, folderSortKey) {
 }
 
 async function listPc5Files(folder, maxDays = 7) {
-  try { await fs.promises.access(folder); } catch { return []; }
+  try { await fs.promises.access(folder); } catch (e) {
+    console.error('[listPc5Files] access 失敗:', folder, e.message);
+    throw e;  // 呼び出し元の /api/files に伝播させる
+  }
 
   let entries;
-  try { entries = await fs.promises.readdir(folder, { withFileTypes: true }); } catch { return []; }
+  try { entries = await fs.promises.readdir(folder, { withFileTypes: true }); } catch (e) {
+    console.error('[listPc5Files] readdir 失敗:', folder, e.message);
+    throw e;
+  }
 
   const dateFolders = [];
   for (const entry of entries) {
@@ -530,14 +536,34 @@ app.get('/api/files', async (req, res) => {
     ? req.query.folder : [req.query.folder || WATCH_FOLDER];
   const maxDays = parseInt(req.query.days || '7') || 7;
 
+  const STAT_TIMEOUT = 10000; // ネットワークパスの stat タイムアウト
   const allFiles = [];
+  let lastError = null;
   for (const folder of folders) {
+    let st;
     try {
-      const st = await fs.promises.stat(folder);
-      if (!st.isDirectory()) continue;
-    } catch { continue; }
+      st = await Promise.race([
+        fs.promises.stat(folder),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('接続タイムアウト(10秒)')), STAT_TIMEOUT)),
+      ]);
+    } catch (e) {
+      lastError = `アクセスエラー: ${folder}\n原因: ${e.message}`;
+      console.error('[/api/files] stat 失敗:', folder, e.message);
+      continue;
+    }
+    if (!st.isDirectory()) {
+      lastError = `フォルダではありません: ${folder}`;
+      continue;
+    }
     const machineName = path.basename(folder);
-    const files = await listPc5Files(folder, maxDays);
+    let files;
+    try {
+      files = await listPc5Files(folder, maxDays);
+    } catch (e) {
+      lastError = `読み込みエラー: ${folder}\n原因: ${e.message}`;
+      console.error('[/api/files] listPc5Files 失敗:', folder, e.message);
+      continue;
+    }
     for (const f of files) {
       f.machine_name   = machineName;
       f.machine_folder = folder;
@@ -547,8 +573,10 @@ app.get('/api/files', async (req, res) => {
 
   // ウォームアップ無効化（スレッドプール枯渇の原因のため）
 
-  if (!allFiles.length && folders.length) {
-    return res.json({ error: `フォルダが見つかりません: ${folders[0]}` });
+  if (!allFiles.length) {
+    const errMsg = lastError
+      || `PC5ファイルが見つかりません: ${folders[0]}\n(フォルダは存在しますがPC5ファイルがありません)`;
+    return res.json({ error: errMsg });
   }
   res.json({ files: allFiles });
 });

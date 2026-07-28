@@ -486,6 +486,7 @@
     <div style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-bottom:1px solid var(--border);background:#fafbff;">
       <span style="font-size:11px;color:var(--muted);flex-shrink:0;">表示期間</span>
       <select id="daysSelect" onchange="reloadWithDays()" style="flex:1;font-size:12px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;">
+        <option value="1">前日</option>
         <option value="7" selected>直近7日</option>
         <option value="30">直近30日</option>
         <option value="90">直近3ヶ月</option>
@@ -715,13 +716,22 @@ async function loadFolders(folders) {
 
   const days = document.getElementById("daysSelect")?.value ?? "30";
   const params = folders.map(f => "folder=" + encodeURIComponent(f)).join("&") + "&days=" + days;
-  const res = await fetch("/api/files?" + params);
-  const data = await res.json();
+  let data;
+  try {
+    const res = await fetch("/api/files?" + params);
+    data = await res.json();
+  } catch (e) {
+    const msg = "通信エラー: " + String(e);
+    document.getElementById("fileList").innerHTML =
+      `<div class="placeholder">⚠️ ${escHtml(msg)}</div>`;
+    document.getElementById("statusBar").textContent = msg;
+    return;
+  }
 
   if (data.error) {
     document.getElementById("fileList").innerHTML =
-      `<div class="placeholder">⚠️ ${data.error}</div>`;
-    document.getElementById("statusBar").textContent = "エラー: " + data.error;
+      `<div class="placeholder" style="white-space:pre-wrap;text-align:left;padding:16px;">⚠️ ${escHtml(data.error)}</div>`;
+    document.getElementById("statusBar").textContent = "エラー";
     return;
   }
 
