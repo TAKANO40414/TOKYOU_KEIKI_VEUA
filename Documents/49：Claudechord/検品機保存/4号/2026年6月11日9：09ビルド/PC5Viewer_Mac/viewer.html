@@ -471,12 +471,20 @@
           <span style="color:#aaa;font-size:12px;">フォルダが選択されていません</span>
         </div>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <!-- パス直接入力 -->
+      <div style="display:flex;gap:8px;align-items:center;">
         <input type="text" id="modalDirectInput" placeholder="パスを直接入力...  例: \\server\share\データ"
-          style="flex:1;min-width:160px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);font-size:13px;"
+          style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid var(--border);font-size:13px;"
           onkeydown="if(event.key==='Enter'){browseDir(this.value);}">
-        <span style="font-size:12px;color:var(--muted);flex-shrink:0;">表示期間</span>
-        <select id="modalDaysSelect" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:12px;">
+      </div>
+      <!-- 期間指定 -->
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <span style="font-size:12px;color:var(--muted);flex-shrink:0;">期間</span>
+        <!-- モード切替 -->
+        <label style="font-size:12px;display:flex;align-items:center;gap:3px;cursor:pointer;">
+          <input type="radio" name="modalPeriodMode" value="days" checked onchange="toggleModalPeriodMode()"> 直近
+        </label>
+        <select id="modalDaysSelect" style="padding:4px 6px;border-radius:5px;border:1px solid var(--border);font-size:12px;">
           <option value="1">前日</option>
           <option value="7" selected>直近7日</option>
           <option value="30">直近30日</option>
@@ -485,7 +493,17 @@
           <option value="365">直近1年</option>
           <option value="0">全期間</option>
         </select>
-        <button class="cancel-btn" onclick="closeModal()">キャンセル</button>
+        <label style="font-size:12px;display:flex;align-items:center;gap:3px;cursor:pointer;">
+          <input type="radio" name="modalPeriodMode" value="range" onchange="toggleModalPeriodMode()"> 日付指定
+        </label>
+        <span id="modalDateRange" style="display:none;align-items:center;gap:4px;">
+          <input type="date" id="modalStartDate"
+            style="padding:3px 6px;border-radius:5px;border:1px solid var(--border);font-size:12px;">
+          <span style="font-size:12px;">～</span>
+          <input type="date" id="modalEndDate"
+            style="padding:3px 6px;border-radius:5px;border:1px solid var(--border);font-size:12px;">
+        </span>
+        <button class="cancel-btn" onclick="closeModal()" style="margin-left:auto;">キャンセル</button>
         <button class="ok-btn" onclick="confirmFolder()">✔ 選択して開く</button>
       </div>
     </div>
@@ -787,22 +805,46 @@ async function browseDir(browsePath) {
   document.getElementById("modalBody").innerHTML = html;
 }
 
+// 期間モード切替（直近 ↔ 日付指定）
+function toggleModalPeriodMode() {
+  const mode = document.querySelector('input[name="modalPeriodMode"]:checked').value;
+  const rangeEl  = document.getElementById('modalDateRange');
+  const daysEl   = document.getElementById('modalDaysSelect');
+  if (mode === 'range') {
+    rangeEl.style.display = 'flex';
+    daysEl.style.display  = 'none';
+    // デフォルト: 今日を終了日、7日前を開始日にセット
+    if (!document.getElementById('modalEndDate').value) {
+      const today = new Date();
+      const prior = new Date(today); prior.setDate(prior.getDate() - 6);
+      document.getElementById('modalEndDate').value   = today.toISOString().slice(0,10);
+      document.getElementById('modalStartDate').value = prior.toISOString().slice(0,10);
+    }
+  } else {
+    rangeEl.style.display = 'none';
+    daysEl.style.display  = '';
+  }
+}
+
 function confirmFolder() {
-  // 直接入力がある場合はそれを追加
   const typed = document.getElementById("modalDirectInput").value.trim();
   if (typed) selectedFolders.add(typed);
-
-  // 選択フォルダがなければ現在表示中のパスを使用
   if (selectedFolders.size === 0 && modalCurrentPath) {
     selectedFolders.add(modalCurrentPath);
   }
 
-  // モーダルの表示期間をサイドバーのセレクトに同期
-  const modalDays = document.getElementById("modalDaysSelect").value;
-  document.getElementById("daysSelect").value = modalDays;
-
-  closeModal();
-  loadFolders([...selectedFolders]);
+  const mode = document.querySelector('input[name="modalPeriodMode"]:checked').value;
+  if (mode === 'range') {
+    const s = document.getElementById('modalStartDate').value;
+    const e = document.getElementById('modalEndDate').value;
+    closeModal();
+    loadFolders([...selectedFolders], { startDate: s, endDate: e });
+  } else {
+    const days = document.getElementById("modalDaysSelect").value;
+    document.getElementById("daysSelect").value = days;
+    closeModal();
+    loadFolders([...selectedFolders]);
+  }
 }
 
 let allFiles = [];
@@ -815,7 +857,8 @@ function reloadWithDays() {
 }
 
 // --- 複数フォルダ読み込み ---
-async function loadFolders(folders) {
+// dateOpts: { startDate:"YYYY-MM-DD", endDate:"YYYY-MM-DD" } または省略（daysSelect を使用）
+async function loadFolders(folders, dateOpts) {
   if (!folders || !folders.length) return;
   currentFolders = folders;
   currentFolder = folders[0];
@@ -826,8 +869,17 @@ async function loadFolders(folders) {
   document.getElementById("fileList").innerHTML = '<div class="placeholder"><div class="spinner"></div></div>';
   document.getElementById("searchInput").value = "";
 
-  const days = document.getElementById("daysSelect")?.value ?? "30";
-  const params = folders.map(f => "folder=" + encodeURIComponent(f)).join("&") + "&days=" + days;
+  let params = folders.map(f => "folder=" + encodeURIComponent(f)).join("&");
+  if (dateOpts && (dateOpts.startDate || dateOpts.endDate)) {
+    if (dateOpts.startDate) params += "&startDate=" + encodeURIComponent(dateOpts.startDate);
+    if (dateOpts.endDate)   params += "&endDate="   + encodeURIComponent(dateOpts.endDate);
+    // ステータスバーに期間を表示
+    const label = `${dateOpts.startDate || ''}～${dateOpts.endDate || ''}`;
+    document.getElementById("statusBar").textContent = `読み込み中... (${label})`;
+  } else {
+    const days = document.getElementById("daysSelect")?.value ?? "7";
+    params += "&days=" + days;
+  }
   let data;
   try {
     const res = await fetch("/api/files?" + params);

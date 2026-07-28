@@ -535,10 +535,17 @@ async function listPc5FilesInDir(dir, subfolder, folderLabel, folderSortKey) {
   }));
 }
 
-async function listPc5Files(folder, maxDays = 7) {
+// opts: { maxDays, startDate, endDate }
+//   startDate/endDate は "YYYY-MM-DD" 形式。指定時は日付範囲フィルタを使用。
+//   どちらも未指定なら maxDays で直近N日分。
+async function listPc5Files(folder, opts = {}) {
+  const maxDays   = (typeof opts === 'number') ? opts : (opts.maxDays ?? 7);
+  const startKey  = opts.startDate ? opts.startDate.replace(/-/g, '') : null; // YYYYMMDD
+  const endKey    = opts.endDate   ? opts.endDate.replace(/-/g, '')   : null;
+
   try { await fs.promises.access(folder); } catch (e) {
     console.error('[listPc5Files] access 失敗:', folder, e.message);
-    throw e;  // 呼び出し元の /api/files に伝播させる
+    throw e;
   }
 
   let entries;
@@ -555,12 +562,22 @@ async function listPc5Files(folder, maxDays = 7) {
   }
 
   if (dateFolders.length > 0) {
-    // 最新順にソート → maxDays件に絞る → 昇順に戻す
     dateFolders.sort((a, b) => b.info.sortKey.localeCompare(a.info.sortKey));
-    const limited = maxDays > 0 ? dateFolders.slice(0, maxDays) : dateFolders;
+
+    let limited;
+    if (startKey || endKey) {
+      // 日付範囲フィルタ
+      limited = dateFolders.filter(({ info }) => {
+        if (startKey && info.sortKey < startKey) return false;
+        if (endKey   && info.sortKey > endKey)   return false;
+        return true;
+      });
+    } else {
+      // 直近 maxDays 日分
+      limited = maxDays > 0 ? dateFolders.slice(0, maxDays) : dateFolders;
+    }
     limited.sort((a, b) => a.info.sortKey.localeCompare(b.info.sortKey));
 
-    // 日付フォルダ間も並列処理
     const perFolder = await Promise.all(
       limited.map(({ info, dir }) =>
         listPc5FilesInDir(dir, info.folder, info.label, info.sortKey)
@@ -569,7 +586,6 @@ async function listPc5Files(folder, maxDays = 7) {
     return perFolder.flat();
   }
 
-  // 日付フォルダなし: ルート直下を処理
   return listPc5FilesInDir(folder, '', '', '');
 }
 
@@ -607,7 +623,10 @@ app.get('/api/default_folder', (_req, res) =>
 app.get('/api/files', async (req, res) => {
   const folders = Array.isArray(req.query.folder)
     ? req.query.folder : [req.query.folder || WATCH_FOLDER];
-  const maxDays = parseInt(req.query.days || '7') || 7;
+  const maxDays    = parseInt(req.query.days || '7') || 7;
+  const startDate  = req.query.startDate || null;  // YYYY-MM-DD
+  const endDate    = req.query.endDate   || null;  // YYYY-MM-DD
+  const listOpts   = (startDate || endDate) ? { startDate, endDate } : { maxDays };
 
   const STAT_TIMEOUT = 10000; // ネットワークパスの stat タイムアウト
   const allFiles = [];
@@ -647,7 +666,7 @@ app.get('/api/files', async (req, res) => {
     const machineName = path.basename(folder);
     let files;
     try {
-      files = await listPc5Files(folder, maxDays);
+      files = await listPc5Files(folder, listOpts);
     } catch (e) {
       lastError = `読み込みエラー: ${folder}\n原因: ${e.message}`;
       console.error('[/api/files] listPc5Files 失敗:', folder, e.message);
