@@ -198,7 +198,8 @@ async function autoMount(networkPath, username = '', password = '') {
   const auth = username
     ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`
     : '';
-  const smbUrl = `//${auth}${info.server}/${info.share}`;
+  // 全角文字など特殊文字を含む共有名をパーセントエンコード（TOKYO＿KEIKI 等）
+  const smbUrl = `//${auth}${info.server}/${encodeURIComponent(info.share)}`;
   execSync(`/sbin/mount_smbfs "${smbUrl}" "${mountPoint}"`, { timeout: 15000, stdio: 'pipe' });
   _mounts.set(info.key, mountPoint);
 
