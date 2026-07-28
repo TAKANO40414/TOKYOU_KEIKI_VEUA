@@ -649,19 +649,37 @@ function showNetworkInput() {
   }
 }
 
-// サーバー/共有名からパスを組み立てる
+// 全角ASCII → 半角ASCII 変換
+function toHalfWidth(s) {
+  return s.replace(/[！-～]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+          .replace(/　/g, ' ').trim();
+}
+
+// サーバー/共有名からパスを組み立てる（全角→半角自動変換）
 function buildNetworkPath() {
-  const host  = document.getElementById('networkHost').value.trim();
-  const share = document.getElementById('networkShare').value.trim();
-  const sub   = document.getElementById('networkSub').value.trim();
+  const host  = toHalfWidth(document.getElementById('networkHost').value);
+  const share = toHalfWidth(document.getElementById('networkShare').value);
+  const sub   = toHalfWidth(document.getElementById('networkSub').value);
   if (!host || !share) return '';
   const base = `\\\\${host}\\${share}`;
   return sub ? `${base}\\${sub}` : base;
 }
 
 function updateNetworkPreview() {
-  const p = buildNetworkPath();
-  document.getElementById('networkPreview').textContent = p || '\\\\サーバー\\共有名';
+  const host  = toHalfWidth(document.getElementById('networkHost').value);
+  const share = toHalfWidth(document.getElementById('networkShare').value);
+  const sub   = toHalfWidth(document.getElementById('networkSub').value);
+  // 全角混入を警告
+  const rawShare = document.getElementById('networkShare').value.trim();
+  const statusEl = document.getElementById('networkStatus');
+  if (rawShare && rawShare !== share) {
+    statusEl.style.color = '#c07000';
+    statusEl.textContent = '⚠️ 全角文字を半角に自動変換します: ' + share;
+  } else if (statusEl.textContent.startsWith('⚠️ 全角')) {
+    statusEl.textContent = '';
+  }
+  const p = (host && share) ? `\\\\${host}\\${share}${sub ? '\\'+sub : ''}` : '\\\\サーバー\\共有名';
+  document.getElementById('networkPreview').textContent = p;
 }
 
 // ネットワーク接続して即開く（マウント + ファイル読み込み）

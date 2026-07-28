@@ -149,6 +149,14 @@ const WATCH_FOLDER = process.argv[2] || process.cwd();
 // ─── ネットワーク自動マウント ──────────────────────────────────────────────────
 const _mounts = new Map(); // "server/share" -> mountPoint
 
+// 全角ASCII → 半角ASCII 変換（日本語IMEで＿が入力される問題を防ぐ）
+function toHalfWidth(str) {
+  return str
+    .replace(/[！-～]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/　/g, ' ')
+    .trim();
+}
+
 function parseNetworkPath(p) {
   // \\server\share\sub  または  //server/share/sub  を解析
   const norm = p.replace(/\\/g, '/').replace(/^\/\//, '');
@@ -182,6 +190,9 @@ async function autoMount(networkPath, username = '', password = '') {
   }
 
   // Mac / Linux: mount_smbfs でマウント
+  // 全角→半角正規化（日本語IMEで＿等が混入する対策）
+  info.server = toHalfWidth(info.server);
+  info.share  = toHalfWidth(info.share);
   const mountPoint = path.join(os.tmpdir(), `pc5_${info.key.replace(/[^a-zA-Z0-9]/g, '_')}`);
   await fs.promises.mkdir(mountPoint, { recursive: true });
 
