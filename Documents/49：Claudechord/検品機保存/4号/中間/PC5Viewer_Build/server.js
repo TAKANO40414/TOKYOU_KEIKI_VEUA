@@ -140,9 +140,70 @@ async function openZip(filePath) {
   }
 }
 
+const { execSync } = require('child_process');
+
 const app  = express();
 const PORT = 8765;
 const WATCH_FOLDER = process.argv[2] || process.cwd();
+
+// ─── ネットワーク自動マウント ──────────────────────────────────────────────────
+const _mounts = new Map(); // "server/share" -> mountPoint
+
+function parseNetworkPath(p) {
+  // \\server\share\sub  または  //server/share/sub  を解析
+  const norm = p.replace(/\\/g, '/').replace(/^\/\//, '');
+  const parts = norm.split('/').filter(Boolean);
+  if (parts.length < 2) return null;
+  return {
+    server:  parts[0],
+    share:   parts[1],
+    subPath: parts.slice(2).join(path.sep),
+    key:     `${parts[0]}/${parts[1]}`,
+  };
+}
+
+function isNetworkPath(p) {
+  return p.startsWith('\\\\') || p.startsWith('//');
+}
+
+async function autoMount(networkPath, username = '', password = '') {
+  const info = parseNetworkPath(networkPath);
+  if (!info) throw new Error('不正なネットワークパス形式');
+
+  if (process.platform === 'win32') {
+    // Windows: UNC パスはそのまま使える。接続が切れていれば net use で再接続
+    const unc = `\\\\${info.server}\\${info.share}`;
+    try {
+      const creds = username ? ` /user:${username} "${password}"` : '';
+      execSync(`net use "${unc}"${creds} /persistent:no`, { timeout: 12000, stdio: 'pipe' });
+    } catch {}
+    const result = info.subPath ? path.join(`\\\\${info.server}\\${info.share}`, info.subPath) : `\\\\${info.server}\\${info.share}`;
+    return result;
+  }
+
+  // Mac / Linux: mount_smbfs でマウント
+  const mountPoint = path.join(os.tmpdir(), `pc5_${info.key.replace(/[^a-zA-Z0-9]/g, '_')}`);
+  await fs.promises.mkdir(mountPoint, { recursive: true });
+
+  // すでにマウント済みか確認
+  try {
+    const mlist = execSync('mount', { encoding: 'utf8', timeout: 3000 });
+    if (mlist.includes(mountPoint)) {
+      _mounts.set(info.key, mountPoint);
+      return info.subPath ? path.join(mountPoint, info.subPath) : mountPoint;
+    }
+  } catch {}
+
+  // SMB マウント実行
+  const auth = username
+    ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`
+    : '';
+  const smbUrl = `//${auth}${info.server}/${info.share}`;
+  execSync(`/sbin/mount_smbfs "${smbUrl}" "${mountPoint}"`, { timeout: 15000, stdio: 'pipe' });
+  _mounts.set(info.key, mountPoint);
+
+  return info.subPath ? path.join(mountPoint, info.subPath) : mountPoint;
+}
 
 // ─── キャッシュ ───────────────────────────────────────────────────────────────
 const CACHE_VERSION = 3;  // バージョンが変わると古いキャッシュは自動破棄
@@ -539,7 +600,7 @@ app.get('/api/files', async (req, res) => {
   const STAT_TIMEOUT = 10000; // ネットワークパスの stat タイムアウト
   const allFiles = [];
   let lastError = null;
-  for (const folder of folders) {
+  for (let folder of folders) {
     let st;
     try {
       st = await Promise.race([
@@ -547,9 +608,25 @@ app.get('/api/files', async (req, res) => {
         new Promise((_, rej) => setTimeout(() => rej(new Error('接続タイムアウト(10秒)')), STAT_TIMEOUT)),
       ]);
     } catch (e) {
-      lastError = `アクセスエラー: ${folder}\n原因: ${e.message}`;
-      console.error('[/api/files] stat 失敗:', folder, e.message);
-      continue;
+      // ネットワークパスなら自動マウントを試みる
+      if (isNetworkPath(folder)) {
+        try {
+          console.log('[/api/files] 自動マウント試行:', folder);
+          folder = await autoMount(folder);
+          st = await Promise.race([
+            fs.promises.stat(folder),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('マウント後タイムアウト')), STAT_TIMEOUT)),
+          ]);
+        } catch (me) {
+          lastError = `ネットワーク接続エラー: ${folder}\n原因: ${me.message}\n(サーバーアドレスや共有名を確認してください)`;
+          console.error('[/api/files] 自動マウント失敗:', me.message);
+          continue;
+        }
+      } else {
+        lastError = `アクセスエラー: ${folder}\n原因: ${e.message}`;
+        console.error('[/api/files] stat 失敗:', folder, e.message);
+        continue;
+      }
     }
     if (!st.isDirectory()) {
       lastError = `フォルダではありません: ${folder}`;
@@ -581,10 +658,28 @@ app.get('/api/files', async (req, res) => {
   res.json({ files: allFiles });
 });
 
+// ─── ネットワークマウント ─────────────────────────────────────────────────────
+app.post('/api/mount', express.json(), async (req, res) => {
+  const { path: networkPath, username = '', password = '' } = req.body || {};
+  if (!networkPath) return res.json({ error: 'パスを指定してください' });
+  if (!isNetworkPath(networkPath)) {
+    // ローカルパスの場合はそのまま返す
+    return res.json({ ok: true, local_path: networkPath });
+  }
+  try {
+    console.log('[/api/mount] マウント開始:', networkPath);
+    const localPath = await autoMount(networkPath, username, password);
+    console.log('[/api/mount] マウント成功:', localPath);
+    res.json({ ok: true, local_path: localPath });
+  } catch (e) {
+    console.error('[/api/mount] 失敗:', e.message);
+    res.json({ error: `接続失敗: ${e.message}` });
+  }
+});
+
 // ─── Windowsドライブ一覧 ─────────────────────────────────────────────────────
 app.get('/api/drives', (_req, res) => {
   if (process.platform === 'win32') {
-    const { execSync } = require('child_process');
     const drives = [];
     // PowerShell でドライブ一覧取得（wmic は Windows11 で非推奨のため代替）
     try {

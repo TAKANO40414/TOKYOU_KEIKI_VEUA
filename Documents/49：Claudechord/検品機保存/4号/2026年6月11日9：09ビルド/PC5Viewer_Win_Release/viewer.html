@@ -422,18 +422,31 @@
       <button onclick="browseDir(homeDir)" style="padding:4px 10px;border-radius:5px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:12px;">🏠 ホーム</button>
       <button onclick="showNetworkInput()" style="padding:4px 10px;border-radius:5px;border:1px solid #4a9eff;background:#e8f0ff;color:#1a5aaf;cursor:pointer;font-size:12px;font-weight:bold;">🌐 ネットワークパス入力</button>
     </div>
-    <!-- ネットワークパス入力パネル（初期非表示） -->
-    <div id="networkInputPanel" style="display:none;padding:10px 14px;background:#fff8e8;border-bottom:1px solid #f0c060;">
-      <div style="font-size:12px;color:#666;margin-bottom:6px;">📡 ネットワーク共有フォルダのパスを入力してください</div>
-      <div style="display:flex;gap:6px;align-items:center;">
+    <!-- ネットワーク接続パネル（初期非表示） -->
+    <div id="networkInputPanel" style="display:none;padding:10px 14px;background:#f0f6ff;border-bottom:2px solid #4a9eff;">
+      <div style="font-size:12px;font-weight:bold;color:#1a5aaf;margin-bottom:8px;">📡 ネットワーク共有フォルダに接続</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+        <span style="font-size:12px;color:#555;flex-shrink:0;width:80px;">アドレス</span>
         <input type="text" id="networkPathInput"
-          placeholder="例: \\server\share\検品データ  または  \\192.168.1.10\PC5Data"
-          style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid #f0c060;font-size:13px;"
-          onkeydown="if(event.key==='Enter'){browseNetwork();}">
-        <button onclick="browseNetwork()" style="padding:6px 12px;border-radius:6px;border:none;background:#f0a000;color:#fff;cursor:pointer;font-size:13px;font-weight:bold;">移動</button>
-        <button onclick="document.getElementById('networkInputPanel').style.display='none'" style="padding:6px 8px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer;font-size:12px;">✕</button>
+          placeholder="\\192.168.1.10\PC5Data  または  //192.168.1.10/PC5Data"
+          style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid #4a9eff;font-size:13px;font-family:monospace;"
+          onkeydown="if(event.key==='Enter'){connectNetwork();}">
       </div>
-      <div style="font-size:11px;color:#888;margin-top:4px;">※ Windowsでは \\（バックスラッシュ2つ）でサーバー名を指定します</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+        <span style="font-size:12px;color:#555;flex-shrink:0;width:80px;">ユーザー名</span>
+        <input type="text" id="networkUser" placeholder="（認証不要なら空欄）"
+          style="flex:1;padding:5px 10px;border-radius:6px;border:1px solid #ccc;font-size:12px;">
+        <span style="font-size:12px;color:#555;flex-shrink:0;">パスワード</span>
+        <input type="password" id="networkPass" placeholder="（任意）"
+          style="flex:1;padding:5px 10px;border-radius:6px;border:1px solid #ccc;font-size:12px;"
+          onkeydown="if(event.key==='Enter'){connectNetwork();}">
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <button onclick="connectNetwork()" style="padding:7px 16px;border-radius:6px;border:none;background:#1a7fff;color:#fff;cursor:pointer;font-size:13px;font-weight:bold;">🔌 接続して開く</button>
+        <button onclick="browseNetwork()" style="padding:7px 12px;border-radius:6px;border:1px solid #4a9eff;background:#fff;color:#1a5aaf;cursor:pointer;font-size:12px;">📂 参照</button>
+        <button onclick="document.getElementById('networkInputPanel').style.display='none'" style="padding:7px 8px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer;font-size:12px;">✕</button>
+        <span id="networkStatus" style="font-size:12px;color:#c00;margin-left:4px;"></span>
+      </div>
     </div>
     <div class="modal-body" id="modalBody">
       <div class="modal-loading">読み込み中...</div>
@@ -624,7 +637,44 @@ function showNetworkInput() {
   }
 }
 
-// ネットワークパスに移動
+// ネットワーク接続して即開く（マウント + ファイル読み込み）
+async function connectNetwork() {
+  const addr = document.getElementById('networkPathInput').value.trim();
+  if (!addr) return;
+  const user = document.getElementById('networkUser').value.trim();
+  const pass = document.getElementById('networkPass').value;
+  const statusEl = document.getElementById('networkStatus');
+  statusEl.style.color = '#1a7fff';
+  statusEl.textContent = '接続中...';
+
+  let localPath;
+  try {
+    const res = await fetch('/api/mount', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: addr, username: user, password: pass }),
+    });
+    const d = await res.json();
+    if (d.error) {
+      statusEl.style.color = '#c00';
+      statusEl.textContent = '⚠️ ' + d.error;
+      return;
+    }
+    localPath = d.local_path || addr;
+  } catch (e) {
+    statusEl.style.color = '#c00';
+    statusEl.textContent = '⚠️ 通信エラー: ' + e;
+    return;
+  }
+
+  statusEl.textContent = '';
+  document.getElementById('networkInputPanel').style.display = 'none';
+  closeModal();
+  selectedFolders = new Set([localPath]);
+  loadFolders([localPath]);
+}
+
+// ネットワークパスをフォルダブラウザで参照
 function browseNetwork() {
   const val = document.getElementById('networkPathInput').value.trim();
   if (!val) return;
