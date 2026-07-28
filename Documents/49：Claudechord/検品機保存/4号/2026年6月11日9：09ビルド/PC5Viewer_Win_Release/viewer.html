@@ -471,10 +471,20 @@
           <span style="color:#aaa;font-size:12px;">フォルダが選択されていません</span>
         </div>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <input type="text" id="modalDirectInput" placeholder="パスを直接入力...  例: \\server\share\データ"
-          style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid var(--border);font-size:13px;"
+          style="flex:1;min-width:160px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);font-size:13px;"
           onkeydown="if(event.key==='Enter'){browseDir(this.value);}">
+        <span style="font-size:12px;color:var(--muted);flex-shrink:0;">表示期間</span>
+        <select id="modalDaysSelect" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);font-size:12px;">
+          <option value="1">前日</option>
+          <option value="7" selected>直近7日</option>
+          <option value="30">直近30日</option>
+          <option value="90">直近3ヶ月</option>
+          <option value="180">直近6ヶ月</option>
+          <option value="365">直近1年</option>
+          <option value="0">全期間</option>
+        </select>
         <button class="cancel-btn" onclick="closeModal()">キャンセル</button>
         <button class="ok-btn" onclick="confirmFolder()">✔ 選択して開く</button>
       </div>
@@ -786,6 +796,10 @@ function confirmFolder() {
   if (selectedFolders.size === 0 && modalCurrentPath) {
     selectedFolders.add(modalCurrentPath);
   }
+
+  // モーダルの表示期間をサイドバーのセレクトに同期
+  const modalDays = document.getElementById("modalDaysSelect").value;
+  document.getElementById("daysSelect").value = modalDays;
 
   closeModal();
   loadFolders([...selectedFolders]);
